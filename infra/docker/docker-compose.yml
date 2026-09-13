@@ -13,7 +13,7 @@ services:
     ports:
       - "9090:9090"
     volumes:
-      - ../monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ../../monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
 
   grafana:
     image: grafana/grafana-oss:latest
@@ -31,7 +31,7 @@ services:
       - "8888:8888"
       - "8889:8889"
     volumes:
-      - ../monitoring/otel-collector.yaml:/etc/otel-collector.yaml:ro
+      - ../../monitoring/otel-collector.yaml:/etc/otel-collector.yaml:ro
 
   zookeeper:
     image: confluentinc/cp-zookeeper:7.6.0
@@ -60,7 +60,7 @@ services:
     environment:
       <<: *residency-env
       POSTGRES_USER: pesaguard
-      POSTGRES_PASSWORD: pesaguard
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set}
       POSTGRES_DB: pesaguard
     ports:
       - "5433:5432"
@@ -83,8 +83,9 @@ services:
       - ../.env
     environment:
       <<: *residency-env
-      DATABASE_URL: ${DATABASE_URL_DOCKER:-postgresql://pesaguard:pesaguard@postgres:5432/pesaguard}
+      DATABASE_URL: ${DATABASE_URL_DOCKER:?DATABASE_URL_DOCKER must be set}
       KAFKA_BOOTSTRAP_SERVERS: ${KAFKA_BOOTSTRAP_SERVERS_DOCKER:-kafka:9092}
+      JWT_SECRET_KEY: ${JWT_SECRET_KEY:?JWT_SECRET_KEY must be set}
       SENTRY_DSN: ${SENTRY_DSN:-}
       SENTRY_ENVIRONMENT: ${SENTRY_ENVIRONMENT:-development}
       SENTRY_RELEASE: ${SENTRY_RELEASE:-}

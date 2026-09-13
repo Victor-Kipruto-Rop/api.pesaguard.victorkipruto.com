@@ -155,6 +155,75 @@ def _publish_transaction_event(topic: str, payload: dict) -> None:
     publish_transaction_event(topic, payload)
 
 
+def replay_dead_letter_job(dead_letter_id: str, tenant_id: str) -> None:
+    """Load and decrypt a dead-letter only inside the worker process."""
+    from data_protection import unprotect_payload
+    from models import DeadLetter
+    from producer import publish_transaction_event
+
+    session_factory = sessionmaker(bind=_task_db_engine, expire_on_commit=False)
+    with session_factory() as session:
+        entry = session.query(DeadLetter).filter(
+            DeadLetter.id == dead_letter_id,
+            DeadLetter.tenant_id == tenant_id,
+        ).first()
+        if entry is None or entry.replay_status not in {"queued", "replaying"}:
+            return
+        entry.replay_status = "replaying"
+        session.commit()
+        try:
+            publish_transaction_event(
+                os.getenv("KAFKA_TOPIC_TRANSACTIONS", "mpesa.transactions.raw"),
+                unprotect_payload(entry.payload or {}),
+            )
+            entry.replay_status = "published"
+            entry.processed = True
+            entry.processed_at = datetime.now(timezone.utc)
+            session.commit()
+        except Exception as exc:
+            entry.replay_status = "failed"
+            entry.error_detail = str(exc)[:2000]
+            session.commit()
+            raise
+
+
+def drain_transaction_outbox(limit: int = 100) -> Dict[str, Any]:
+    """Publish a bounded durable outbox batch and retain failures for replay."""
+    from event_store import EventStore
+    from producer import publish_transaction_event
+
+    store = EventStore(database_url=DATABASE_URL)
+    claimed = store.claim_outbox_batch(limit=limit)
+    published = 0
+    failed = 0
+    for row in claimed:
+        try:
+            publish_transaction_event(row["topic"], row["payload"])
+            store.mark_outbox_published(row["id"])
+            published += 1
+        except Exception as exc:
+            failed += 1
+            retry_seconds = min(30 * (2 ** max(row["attempts"] - 1, 0)), 3600)
+            store.mark_outbox_failed(row["id"], str(exc), retry_seconds=retry_seconds)
+            logger.exception("Transaction outbox publish failed for row=%s", row["id"])
+
+    return {"status": "ok" if failed == 0 else "partial_failure", "claimed": len(claimed), "published": published, "failed": failed}
+
+
+def enqueue_transaction_outbox_drain() -> Dict[str, Any]:
+    """Schedule durable outbox delivery without putting payload durability in Redis."""
+    try:
+        import redis
+        import rq
+
+        queue = rq.Queue(name=RQ_QUEUE_NAME, connection=redis.from_url(REDIS_URL, socket_connect_timeout=5, socket_timeout=5))
+        job = queue.enqueue(drain_transaction_outbox, job_timeout=60)
+        return {"status": "queued", "job_id": job.id, "queue": RQ_QUEUE_NAME}
+    except Exception as exc:
+        logger.warning("Unable to schedule transaction outbox drain: %s", exc)
+        return {"status": "deferred", "error": str(exc)}
+
+
 def enqueue_notification_event(event: dict) -> Dict[str, Any]:
     """Queue a notification command without coupling business workers to providers."""
     if not isinstance(event, dict) or not event.get("event") or not event.get("tenant_id"):

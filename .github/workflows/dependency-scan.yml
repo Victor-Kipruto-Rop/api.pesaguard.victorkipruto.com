@@ -52,14 +52,14 @@ jobs:
           bandit -r "$TARGET_DIR" -ll -ii -f txt
 
       - name: Check database & library safety (safety)
-        run: safety check --json || true
+        run: safety check --json
 
       - name: Upload Bandit Security Report
         uses: actions/upload-artifact@v4
         with:
           name: bandit-security-report
           path: bandit-report.json
-        continue-on-error: true
+        continue-on-error: false
 
   frontend-scan:
     runs-on: ubuntu-latest
@@ -91,11 +91,10 @@ jobs:
           if [ -f frontend/package.json ]; then
             npm --prefix frontend audit --audit-level=moderate
           fi
-        continue-on-error: true
+        continue-on-error: false
 
       - name: Check production vulnerabilities (npm audit json)
         run: |
           if [ -f frontend/package.json ]; then
             npm --prefix frontend audit --omit=dev --json
           fi
-        continue-on-error: true

@@ -10,18 +10,32 @@ import logging
 import os
 import threading
 import uuid
-from datetime import datetime, timezone
+import hashlib
+from decimal import Decimal, InvalidOperation
+from datetime import datetime, timedelta, timezone
 from enum import Enum
 from typing import Any, Dict, Optional
 
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, or_
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.orm import Session, sessionmaker
 
 from idempotency import derive_idempotency_key
-from models import Base, ProcessedTransaction, Transaction
+from models import Base, ProcessedTransaction, ReconciliationOutbox, Transaction, TransactionOutbox
+from data_protection import protect_payload, tokenize_identifier
 
 logger = logging.getLogger("pesaguard.event_store")
+
+
+def _money(value: Any) -> Decimal:
+    """Normalize provider amounts without binary floating-point conversion."""
+    try:
+        amount = Decimal(str(value)).quantize(Decimal("0.01"))
+    except (InvalidOperation, TypeError, ValueError):
+        raise ValueError("transaction amount must be a valid decimal")
+    if amount < 0:
+        raise ValueError("transaction amount must not be negative")
+    return amount
 
 
 def provider_account_id(payload: Dict[str, Any]) -> str:
@@ -201,14 +215,25 @@ class EventStore:
                     trans_id=trans_id,
                     tenant_id=tenant_id,
                     provider_account_id=account_id,
-                    trans_amount=float(payload.get("TransAmount", 0)),
-                    msisdn=str(payload.get("MSISDN", "")),
+                    trans_amount=_money(payload.get("TransAmount", 0)),
+                    msisdn=tokenize_identifier(payload.get("MSISDN", "")),
                     business_short_code=str(payload.get("BusinessShortCode", "")),
                     trans_time=str(payload.get("TransTime", "")),
-                    raw_payload=payload,
+                    raw_payload=protect_payload(payload),
                     created_at=datetime.now(timezone.utc),
                 )
                 session.add(t_record)
+
+                session.add(TransactionOutbox(
+                    id=f"outbox_{uuid.uuid4().hex[:12]}",
+                    tenant_id=tenant_id,
+                    event_key=idempotency_key,
+                    topic=os.getenv("KAFKA_TOPIC_TRANSACTIONS", "mpesa.transactions.raw"),
+                    payload=protect_payload(payload),
+                    status="pending",
+                    available_at=datetime.now(timezone.utc),
+                    created_at=datetime.now(timezone.utc),
+                ))
 
                 session.commit()
                 return ProcessResult.STORED
@@ -285,14 +310,25 @@ class EventStore:
                 trans_id=trans_id,
                 tenant_id=tenant_id,
                 provider_account_id=account_id,
-                trans_amount=float(payload.get("TransAmount", 0)),
-                msisdn=str(payload.get("MSISDN", "")),
+                trans_amount=_money(payload.get("TransAmount", 0)),
+                msisdn=tokenize_identifier(payload.get("MSISDN", "")),
                 business_short_code=str(payload.get("BusinessShortCode", "")),
                 trans_time=str(payload.get("TransTime", "")),
-                raw_payload=payload,
+                raw_payload=protect_payload(payload),
                 created_at=datetime.now(timezone.utc),
             )
             session.add(t_record)
+
+            session.add(TransactionOutbox(
+                id=f"outbox_{uuid.uuid4().hex[:12]}",
+                tenant_id=tenant_id,
+                event_key=idempotency_key,
+                topic=os.getenv("KAFKA_TOPIC_TRANSACTIONS", "mpesa.transactions.raw"),
+                payload=protect_payload(payload),
+                status="pending",
+                available_at=datetime.now(timezone.utc),
+                created_at=datetime.now(timezone.utc),
+            ))
 
             session.flush()
             return ProcessResult.STORED
@@ -360,15 +396,22 @@ class EventStore:
 
             self._ensure_ready()
             with self.Session() as session:
+                scoped_tenant = tenant_id or "default"
+                account_id = provider_account_id(payload or {})
+                trans_id = str((payload or {}).get("TransID") or (payload or {}).get("trans_id") or "unknown")
+                event_key = hashlib.sha256(f"{scoped_tenant}:{account_id}:{trans_id}:{reason}".encode("utf-8")).hexdigest()
                 dl = DeadLetter(
-                    id=f"dl_{uuid.uuid4().hex[:12]}",
-                    tenant_id=tenant_id or "default",
+                    id=f"dl_{event_key[:24]}",
+                    tenant_id=scoped_tenant,
                     reason=reason,
-                    payload=payload or {},
+                    payload=protect_payload(payload or {}),
                     error_detail=str(error_detail) if error_detail else None,
                     attempts=0,
                     processed=False,
                     processed_at=None,
+                    replay_status="idle",
+                    provider_account_id=account_id,
+                    event_key=event_key,
                     created_at=datetime.now(timezone.utc),
                 )
                 session.add(dl)
@@ -379,6 +422,113 @@ class EventStore:
                 "write_dead_letter() failed for reason=%s — payload could not be persisted.",
                 reason,
             )
+
+    def claim_outbox_batch(self, limit: int = 100, lease_seconds: int = 60):
+        """Claim a bounded batch of pending outbox rows for one worker lease."""
+        self._ensure_ready()
+        now = datetime.now(timezone.utc)
+        lease_until = now + timedelta(seconds=lease_seconds)
+        with self.Session() as session:
+            rows = (
+                session.query(TransactionOutbox)
+                .filter(
+                    TransactionOutbox.status.in_(["pending", "failed"]),
+                    TransactionOutbox.available_at <= now,
+                    or_(TransactionOutbox.locked_until.is_(None), TransactionOutbox.locked_until < now),
+                )
+                .order_by(TransactionOutbox.created_at.asc())
+                .with_for_update(skip_locked=True)
+                .limit(max(1, min(limit, 1000)))
+                .all()
+            )
+            for row in rows:
+                row.status = "processing"
+                row.attempts += 1
+                row.locked_until = lease_until
+            session.commit()
+            return [
+                {"id": row.id, "topic": row.topic, "payload": row.payload, "attempts": row.attempts}
+                for row in rows
+            ]
+
+    def mark_outbox_published(self, outbox_id: str) -> None:
+        """Mark a successfully published outbox row."""
+        self._ensure_ready()
+        with self.Session() as session:
+            row = session.get(TransactionOutbox, outbox_id)
+            if row is None:
+                return
+            row.status = "published"
+            row.published_at = datetime.now(timezone.utc)
+            row.locked_until = None
+            session.commit()
+
+    def mark_outbox_failed(self, outbox_id: str, error: str, retry_seconds: int = 30) -> None:
+        """Release a failed outbox row with bounded retry backoff."""
+        self._ensure_ready()
+        with self.Session() as session:
+            row = session.get(TransactionOutbox, outbox_id)
+            if row is None:
+                return
+            row.status = "failed"
+            row.last_error = str(error)[:1000]
+            row.available_at = datetime.now(timezone.utc) + timedelta(seconds=min(max(retry_seconds, 1), 3600))
+            row.locked_until = None
+            session.commit()
+
+    def claim_reconciliation_outbox_batch(self, limit: int = 100, lease_seconds: int = 60):
+        """Claim due reconciliation publications with an expiring lease."""
+        self._ensure_ready()
+        now = datetime.now(timezone.utc)
+        lease_until = now + timedelta(seconds=lease_seconds)
+        with self.Session() as session:
+            rows = (
+                session.query(ReconciliationOutbox)
+                .filter(
+                    ReconciliationOutbox.status.in_(["pending", "failed"]),
+                    ReconciliationOutbox.available_at <= now,
+                    or_(ReconciliationOutbox.locked_until.is_(None), ReconciliationOutbox.locked_until < now),
+                )
+                .order_by(ReconciliationOutbox.created_at.asc())
+                .with_for_update(skip_locked=True)
+                .limit(max(1, min(limit, 1000)))
+                .all()
+            )
+            for row in rows:
+                row.status = "processing"
+                row.attempts += 1
+                row.locked_until = lease_until
+            session.commit()
+            return [
+                {"id": row.id, "tenant_id": row.tenant_id, "event_key": row.event_key,
+                 "topic": row.topic, "payload": row.payload, "attempts": row.attempts}
+                for row in rows
+            ]
+
+    def mark_reconciliation_outbox_published(self, outbox_id: str) -> None:
+        """Mark a successfully published reconciliation row."""
+        self._ensure_ready()
+        with self.Session() as session:
+            row = session.get(ReconciliationOutbox, outbox_id)
+            if row is None:
+                return
+            row.status = "published"
+            row.published_at = datetime.now(timezone.utc)
+            row.locked_until = None
+            session.commit()
+
+    def mark_reconciliation_outbox_failed(self, outbox_id: str, error: str, retry_seconds: int = 30) -> None:
+        """Release a failed reconciliation row for a later retry."""
+        self._ensure_ready()
+        with self.Session() as session:
+            row = session.get(ReconciliationOutbox, outbox_id)
+            if row is None:
+                return
+            row.status = "failed"
+            row.last_error = str(error)[:1000]
+            row.available_at = datetime.now(timezone.utc) + timedelta(seconds=min(max(retry_seconds, 1), 3600))
+            row.locked_until = None
+            session.commit()
 
 
 # Default singleton instance

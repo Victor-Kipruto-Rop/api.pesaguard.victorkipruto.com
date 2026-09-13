@@ -54,7 +54,7 @@ def _require_dashboard_auth() -> None:
     if request.path == "/health" or request.method == "OPTIONS":
         return
 
-    token = request.headers.get("X-Admin-Token") or request.args.get("admin_token")
+    token = request.headers.get("X-Admin-Token")
     admin_api_token = os.getenv("PESAGUARD_ADMIN_API_TOKEN")
     
     if not admin_api_token:
@@ -254,4 +254,4 @@ def summary() -> Response:
 if __name__ == "__main__":
     port = int(os.getenv("DASHBOARD_API_PORT", 5001))
     debug_mode = os.getenv("FLASK_DEBUG", "false").lower() in {"true", "1", "yes"}
-    app.run(host="0.0.0.0", port=port, debug=debug_mode)
+    app.run(host=os.getenv("PESAGUARD_BIND_HOST", "127.0.0.1"), port=port, debug=debug_mode)

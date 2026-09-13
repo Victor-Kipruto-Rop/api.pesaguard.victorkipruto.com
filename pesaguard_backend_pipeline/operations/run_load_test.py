@@ -13,9 +13,16 @@ import random
 import sys
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from pathlib import Path
 from typing import Any, Dict, List, Set, Tuple
 
-from reconciliation_engine import evaluate_transaction
+try:
+    from pesaguard_backend_pipeline.reconciliation_engine import evaluate_transaction
+except ImportError:  # pragma: no cover - repo-root invocation fallback
+    backend_root = Path(__file__).resolve().parents[1]
+    if str(backend_root) not in sys.path:
+        sys.path.insert(0, str(backend_root))
+    from reconciliation_engine import evaluate_transaction
 
 
 def generate_mock_event_pair(index: int, force_anomaly: str | None = None) -> Tuple[Dict[str, Any], List[Dict[str, Any]]]:

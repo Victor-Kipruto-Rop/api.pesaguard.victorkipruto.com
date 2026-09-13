@@ -15,7 +15,7 @@ services:
       <<: *residency-env
       POSTGRES_DB: pesaguard_staging
       POSTGRES_USER: pesaguard
-      POSTGRES_PASSWORD: pesaguard
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set}
     ports:
       - "5433:5432"
   kafka-staging:

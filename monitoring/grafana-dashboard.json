@@ -81,15 +81,15 @@
     {
       "id": 2,
       "type": "timeseries",
-      "title": "Transactions per minute",
+      "title": "Stored transactions",
       "gridPos": {"h": 8, "w": 8, "x": 8, "y": 0},
       "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
       "targets": [
         {
           "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
           "editorMode": "code",
-          "expr": "sum(rate(pesaguard_transactions_total[5m])) * 60",
-          "legendFormat": "Tx / min",
+          "expr": "pesaguard_transactions_total",
+          "legendFormat": "Stored transactions",
           "range": true
         }
       ],
@@ -115,7 +115,7 @@
             "stacking": {"group": "A", "mode": "none"},
             "thresholdsStyle": {"mode": "off"}
           },
-          "unit": "cpm"
+          "unit": "short"
         }
       }
     },
@@ -129,7 +129,7 @@
         {
           "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
           "editorMode": "code",
-          "expr": "histogram_quantile(0.95, sum by (le) (rate(pesaguard_reconciliation_latency_seconds_bucket[5m])))",
+          "expr": "pesaguard_reconciliation_latency_p95_seconds",
           "legendFormat": "p95 latency",
           "range": true
         }
@@ -178,14 +178,14 @@
     {
       "id": 5,
       "type": "stat",
-      "title": "Total alert volume (rolling 24h)",
+      "title": "Current alert backlog",
       "gridPos": {"h": 8, "w": 12, "x": 12, "y": 8},
       "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
       "targets": [
         {
           "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
           "editorMode": "code",
-          "expr": "sum(increase(pesaguard_alerts_total[24h]))",
+          "expr": "sum(pesaguard_alerts_total)",
           "legendFormat": "Alerts",
           "range": true
         }

@@ -26,7 +26,9 @@ class ProviderManagementService:
 
     def __init__(self, session_factory: sessionmaker):
         self.session_factory = session_factory
-        configured_key = os.getenv("PROVIDER_ENCRYPTION_KEY") or os.getenv("JWT_SECRET_KEY")
+        configured_key = os.getenv("PROVIDER_ENCRYPTION_KEY")
+        if not configured_key and os.getenv("PESAGUARD_ENVIRONMENT", "development").lower() not in {"production", "prod"}:
+            configured_key = os.getenv("JWT_SECRET_KEY")
         if not configured_key:
             raise RuntimeError("PROVIDER_ENCRYPTION_KEY must be configured")
         self._fernet = self._build_fernet(configured_key)

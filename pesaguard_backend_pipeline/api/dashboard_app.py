@@ -1249,8 +1249,10 @@ def operations_outbox():
 @app.route("/api/v1/operations/dead-letters/<dead_letter_id>/replay", methods=["POST"])
 @require_auth(required_permission="resolve:discrepancies")
 def replay_dead_letter(dead_letter_id: str):
-    """Requeue one tenant dead-letter entry for worker processing."""
+    """Queue one tenant dead-letter entry for bounded, auditable replay."""
     tenant_id = get_current_user().tenant_id
+    actor_id = str(getattr(get_current_user(), "user_id", "operator"))
+    replay_reason = str((request.get_json(silent=True) or {}).get("reason", "operator replay"))[:4096]
     session = _open_session()
     try:
         entry = session.query(DeadLetter).filter(
@@ -1259,11 +1261,55 @@ def replay_dead_letter(dead_letter_id: str):
         ).first()
         if entry is None:
             return jsonify({"error": "not_found", "message": "Dead-letter entry not found."}), 404
+        if (entry.attempts or 0) >= 3 or entry.replay_status in {"queued", "replaying"}:
+            return jsonify({"error": "replay_limit", "message": "Dead-letter replay is already queued or has reached its limit."}), 409
         entry.processed = False
         entry.processed_at = None
         entry.attempts = (entry.attempts or 0) + 1
+        entry.replay_status = "queued"
+        entry.replayed_by = actor_id
+        entry.replayed_at = datetime.now(timezone.utc)
+        entry.replay_reason = replay_reason
+        session.add(ActionAuditEntry(
+            id=f"audit_dl_replay_{entry.id}_{entry.attempts}",
+            tenant_id=tenant_id,
+            actor=actor_id,
+            action="dead_letter_replayed",
+            category="operations",
+            outcome="success",
+            severity="warning",
+            resource_type="dead_letter",
+            resource_id=entry.id,
+            idempotency_key=f"dead-letter-replay:{entry.id}:{entry.attempts}",
+            details={"reason": replay_reason, "attempt": entry.attempts},
+            created_at=datetime.now(timezone.utc),
+        ))
         session.commit()
-        return jsonify({"id": entry.id, "status": "requeued", "attempts": entry.attempts}), 200
+        try:
+            from background_tasks import REDIS_URL, RQ_QUEUE_NAME, replay_dead_letter_job
+            import redis
+            import rq
+            queue = rq.Queue(name=RQ_QUEUE_NAME, connection=redis.from_url(REDIS_URL, socket_connect_timeout=5, socket_timeout=5))
+            job = queue.enqueue(replay_dead_letter_job, entry.id, tenant_id, job_timeout=60)
+            enqueue_result = {"status": "queued", "job_id": job.id}
+            if enqueue_result.get("status") == "failed":
+                return jsonify({"id": entry.id, "status": entry.replay_status, "attempts": entry.attempts, "queue": enqueue_result}), 503
+        except Exception as exc:
+            logger.exception("Dead-letter replay enqueue failed for id=%s", entry.id)
+            failed_session = _open_session()
+            try:
+                failed_entry = failed_session.query(DeadLetter).filter(
+                    DeadLetter.id == entry.id,
+                    DeadLetter.tenant_id == tenant_id,
+                ).first()
+                if failed_entry is not None:
+                    failed_entry.replay_status = "failed"
+                    failed_entry.error_detail = "replay enqueue unavailable"
+                    failed_session.commit()
+            finally:
+                failed_session.close()
+            return jsonify({"id": entry.id, "status": "failed", "attempts": entry.attempts, "error": "replay_deferred"}), 503
+        return jsonify({"id": entry.id, "status": entry.replay_status, "attempts": entry.attempts}), 200
     finally:
         session.close()
 

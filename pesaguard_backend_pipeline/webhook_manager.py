@@ -67,11 +67,7 @@ def _validate_webhook_url(url: str) -> Optional[str]:
     try:
         resolved_ips = {info[4][0] for info in socket.getaddrinfo(parsed.hostname, None)}
     except socket.gaierror:
-        # In isolated CI/offline environments, some public test hosts such as
-        # example.com cannot be resolved during validation. Reject only clearly
-        # reserved/private targets up front; otherwise allow the registration to
-        # proceed, as real DNS/network resolution is enforced at delivery time.
-        return None
+        return "url_hostname_cannot_be_resolved"
 
     for ip_str in resolved_ips:
         if _is_private_or_reserved(ip_str):

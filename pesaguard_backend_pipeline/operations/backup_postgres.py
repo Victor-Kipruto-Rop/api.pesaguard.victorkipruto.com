@@ -19,6 +19,8 @@ from __future__ import annotations
 
 import argparse
 import gzip
+import hashlib
+import json
 import logging
 import os
 import subprocess
@@ -37,6 +39,20 @@ logger = logging.getLogger("pesaguard.backup")
 DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://pesaguard:pesaguard@localhost:5432/pesaguard")
 BACKUP_DIR = Path(os.getenv("PESAGUARD_BACKUP_DIR", "/var/backups/pesaguard"))
 RETENTION_DAYS = int(os.getenv("PESAGUARD_BACKUP_RETENTION_DAYS", "30"))
+
+
+def _checksum_path(backup_file: Path) -> Path:
+    return backup_file.with_suffix(backup_file.suffix + ".sha256")
+
+
+def _write_checksum(backup_file: Path) -> Path:
+    digest = hashlib.sha256()
+    with backup_file.open("rb") as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(chunk)
+    checksum_file = _checksum_path(backup_file)
+    checksum_file.write_text(json.dumps({"sha256": digest.hexdigest(), "bytes": backup_file.stat().st_size}), encoding="utf-8")
+    return checksum_file
 
 
 def parse_db_url(url: str) -> dict[str, str]:
@@ -114,6 +130,8 @@ def create_backup() -> Path:
         if not backup_file.exists() or backup_file.stat().st_size == 0:
             raise RuntimeError("Generated backup file is empty.")
 
+        _write_checksum(backup_file)
+
         size_mb = backup_file.stat().st_size / (1024 * 1024)
         logger.info("Backup successfully created: %s (%.2f MB)", backup_file, size_mb)
 
@@ -124,6 +142,9 @@ def create_backup() -> Path:
         logger.error("Backup execution failed: %s", e)
         if backup_file.exists():
             backup_file.unlink()
+        checksum_file = _checksum_path(backup_file)
+        if checksum_file.exists():
+            checksum_file.unlink()
         sys.exit(1)
 
 
@@ -205,27 +226,44 @@ def _cleanup_old_backups() -> None:
 
 
 def test_backup_integrity(backup_file: Path) -> bool:
-    """Verify backup file structure, decompression capability, and SQL signature."""
+    """Verify checksum, full decompression, and SQL dump signatures."""
     if not backup_file.exists():
         logger.warning("Backup file missing during integrity verification: %s", backup_file)
         return False
 
     try:
+        checksum_file = _checksum_path(backup_file)
+        if checksum_file.exists():
+            manifest = json.loads(checksum_file.read_text(encoding="utf-8"))
+            digest = hashlib.sha256()
+            with backup_file.open("rb") as stream:
+                for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+                    digest.update(chunk)
+            if digest.hexdigest() != manifest.get("sha256") or backup_file.stat().st_size != manifest.get("bytes"):
+                logger.warning("Integrity check failed: checksum mismatch for %s", backup_file)
+                return False
+
         is_gzipped = str(backup_file).endswith(".gz")
+        content_size = 0
+        signature_found = False
         if is_gzipped:
             with gzip.open(backup_file, "rt", encoding="utf-8", errors="replace") as f:
-                head = [f.readline() for _ in range(50)]
+                for line in f:
+                    content_size += len(line)
+                    if any(keyword in line for keyword in ("PostgreSQL database dump", "CREATE", "SET", "ALTER")):
+                        signature_found = True
         else:
             with open(backup_file, "r", encoding="utf-8", errors="replace") as f:
-                head = [f.readline() for _ in range(50)]
+                for line in f:
+                    content_size += len(line)
+                    if any(keyword in line for keyword in ("PostgreSQL database dump", "CREATE", "SET", "ALTER")):
+                        signature_found = True
 
-        content = "".join(head)
-        if not content or len(content.strip()) < 10:
+        if content_size < 10:
             logger.warning("Integrity check failed: Backup file is empty or corrupted (%s)", backup_file)
             return False
 
-        sql_keywords = {"PostgreSQL database dump", "CREATE", "INSERT", "SET", "ALTER"}
-        if not any(keyword in content for keyword in sql_keywords):
+        if not signature_found:
             logger.warning("Integrity check failed: No valid SQL signatures found in %s", backup_file)
             return False
 

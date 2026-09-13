@@ -1,0 +1,100 @@
+import os
+
+from sqlalchemy import create_engine
+from sqlalchemy.orm import sessionmaker
+
+from event_store import EventStore, ProcessResult
+from models import Base, ProcessedTransaction, ReconciliationOutbox, Transaction, TransactionOutbox
+
+
+def _payload(trans_id="tx-1"):
+    return {
+        "TransID": trans_id,
+        "TransAmount": "10.50",
+        "MSISDN": "254700000000",
+        "BusinessShortCode": "123456",
+        "TransTime": "20240101120000",
+    }
+
+
+def test_accepted_transaction_and_outbox_are_committed_together(tmp_path):
+    database_url = f"sqlite:///{tmp_path / 'outbox.db'}"
+    engine = create_engine(database_url)
+    Base.metadata.create_all(engine)
+
+    store = EventStore(database_url=database_url)
+    assert store.mark_processed(_payload(), tenant_id="tenant-a") is ProcessResult.STORED
+
+    Session = sessionmaker(bind=engine)
+    with Session() as session:
+        assert session.query(ProcessedTransaction).count() == 1
+        assert session.query(Transaction).count() == 1
+        outbox = session.query(TransactionOutbox).one()
+        assert outbox.tenant_id == "tenant-a"
+        assert outbox.event_key
+        assert outbox.status == "pending"
+        assert outbox.payload["TransID"] == "tx-1"
+
+
+def test_duplicate_transaction_does_not_create_second_outbox_row(tmp_path):
+    database_url = f"sqlite:///{tmp_path / 'duplicate.db'}"
+    engine = create_engine(database_url)
+    Base.metadata.create_all(engine)
+
+    store = EventStore(database_url=database_url)
+    assert store.mark_processed(_payload(), tenant_id="tenant-a") is ProcessResult.STORED
+    assert store.mark_processed(_payload(), tenant_id="tenant-a") is ProcessResult.DUPLICATE
+
+    Session = sessionmaker(bind=engine)
+    with Session() as session:
+        assert session.query(TransactionOutbox).count() == 1
+
+
+def test_outbox_claim_and_failure_release_are_replayable(tmp_path):
+    database_url = f"sqlite:///{tmp_path / 'retry.db'}"
+    engine = create_engine(database_url)
+    Base.metadata.create_all(engine)
+
+    store = EventStore(database_url=database_url)
+    assert store.mark_processed(_payload(), tenant_id="tenant-a") is ProcessResult.STORED
+
+    claimed = store.claim_outbox_batch(limit=10, lease_seconds=30)
+    assert len(claimed) == 1
+    assert claimed[0]["attempts"] == 1
+
+    store.mark_outbox_failed(claimed[0]["id"], "kafka unavailable", retry_seconds=1)
+    with sessionmaker(bind=engine)() as session:
+        row = session.query(TransactionOutbox).one()
+        assert row.status == "failed"
+        assert row.attempts == 1
+        assert row.last_error == "kafka unavailable"
+
+
+def test_reconciliation_outbox_claim_publish_and_retry_are_durable(tmp_path):
+    database_url = f"sqlite:///{tmp_path / 'reconciliation_retry.db'}"
+    engine = create_engine(database_url)
+    Base.metadata.create_all(engine)
+    Session = sessionmaker(bind=engine)
+    with Session() as session:
+        session.add(ReconciliationOutbox(
+            id="recon-outbox-1", tenant_id="tenant-a", event_key="event-1",
+            topic="matched", payload={"TransID": "tx-1"}, status="pending",
+        ))
+        session.commit()
+
+    store = EventStore(database_url=database_url)
+    claimed = store.claim_reconciliation_outbox_batch(limit=10, lease_seconds=30)
+    assert claimed[0]["attempts"] == 1
+    store.mark_reconciliation_outbox_failed(claimed[0]["id"], "kafka unavailable", retry_seconds=1)
+    with Session() as session:
+        row = session.get(ReconciliationOutbox, "recon-outbox-1")
+        assert row.status == "failed"
+        assert row.locked_until is None
+        row.available_at = row.available_at.replace(year=2020)
+        session.commit()
+
+    claimed_again = store.claim_reconciliation_outbox_batch(limit=10, lease_seconds=30)
+    assert claimed_again[0]["attempts"] == 2
+    store.mark_reconciliation_outbox_published("recon-outbox-1")
+    with Session() as session:
+        assert session.get(ReconciliationOutbox, "recon-outbox-1").status == "published"

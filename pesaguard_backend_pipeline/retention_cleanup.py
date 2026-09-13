@@ -19,15 +19,15 @@ from sqlalchemy.orm import sessionmaker
 
 # Resilient import handling across package layouts
 try:
-    from models import Base, DeadLetter, Discrepancy, ProcessedTransaction, Transaction
+    from models import Base, DeadLetter, Discrepancy, ProcessedTransaction, ReconciliationOutbox, Transaction, TransactionOutbox
     from action_audit import ActionAuditEntry, AuditLegalHold
 except ImportError:
     try:
-        from pesaguard_backend_pipeline.models import Base, DeadLetter, Discrepancy, ProcessedTransaction, Transaction
+        from pesaguard_backend_pipeline.models import Base, DeadLetter, Discrepancy, ProcessedTransaction, ReconciliationOutbox, Transaction, TransactionOutbox
         from pesaguard_backend_pipeline.action_audit import ActionAuditEntry, AuditLegalHold
     except ImportError:
         sys.path.append(os.path.join(os.path.dirname(__file__), ".."))
-        from models import Base, DeadLetter, Discrepancy, ProcessedTransaction, Transaction
+        from models import Base, DeadLetter, Discrepancy, ProcessedTransaction, ReconciliationOutbox, Transaction, TransactionOutbox
         from action_audit import ActionAuditEntry, AuditLegalHold
 
 logging.basicConfig(
@@ -63,20 +63,40 @@ def get_session_factory():
     return sessionmaker(bind=get_engine(), expire_on_commit=False)
 
 
-def _delete_in_batches(session, model, time_column, cutoff_dt: datetime, tenant_id: Optional[str] = None, dry_run: bool = False) -> int:
+def _hold_exclusion(model, now: datetime):
+    resource_columns = [column for column in (
+        getattr(model, "id", None), getattr(model, "trans_id", None),
+        getattr(model, "daraja_trans_id", None), getattr(model, "event_key", None),
+    ) if column is not None]
+    resource_match = and_(
+        AuditLegalHold.scope_type.in_(["resource", "transaction"]),
+        or_(*[AuditLegalHold.scope_id == column for column in resource_columns]),
+    ) if resource_columns else False
+    return ~select(AuditLegalHold.id).where(
+        AuditLegalHold.tenant_id == model.tenant_id,
+        AuditLegalHold.active.is_(True),
+        or_(AuditLegalHold.expires_at.is_(None), AuditLegalHold.expires_at > now),
+        or_(AuditLegalHold.scope_type == "tenant", resource_match),
+    ).correlate(model).exists()
+
+
+def _delete_in_batches(session, model, time_column, cutoff_dt: datetime, tenant_id: Optional[str] = None, dry_run: bool = False, extra_filter=None) -> int:
     """Safely purge records older than cutoff timestamp in small transaction chunks."""
     total_deleted = 0
 
     while True:
         # Construct primary key subquery for batch deletion
-        subquery = select(model.id if hasattr(model, "id") else model.trans_id).where(time_column < cutoff_dt)
+        eligibility = [time_column < cutoff_dt, _hold_exclusion(model, datetime.now(timezone.utc))]
+        if extra_filter is not None:
+            eligibility.append(extra_filter)
+        subquery = select(model.id if hasattr(model, "id") else model.trans_id).where(*eligibility)
         if tenant_id and hasattr(model, "tenant_id"):
             subquery = subquery.where(model.tenant_id == tenant_id)
 
         subquery = subquery.limit(BATCH_SIZE)
 
         if dry_run:
-            count_query = select(func.count()).select_from(model).where(time_column < cutoff_dt)
+            count_query = select(func.count()).select_from(model).where(*eligibility)
             if tenant_id and hasattr(model, "tenant_id"):
                 count_query = count_query.where(model.tenant_id == tenant_id)
             return session.scalar(count_query) or 0
@@ -139,7 +159,8 @@ def cleanup_retention(tenant_id: Optional[str] = None, dry_run: bool = False) ->
         dry_run, tenant_id or "all"
     )
 
-    SessionLocal = get_session_factory()
+    cleanup_engine = get_engine()
+    SessionLocal = sessionmaker(bind=cleanup_engine, expire_on_commit=False)
     session = SessionLocal()
 
     try:
@@ -155,10 +176,26 @@ def cleanup_retention(tenant_id: Optional[str] = None, dry_run: bool = False) ->
         deleted_dead_letters = _delete_in_batches(
             session, DeadLetter, DeadLetter.created_at, oldest_dead_letter, tenant_id, dry_run
         )
+        deleted_transaction_outbox = _delete_in_batches(
+            session, TransactionOutbox, TransactionOutbox.created_at, oldest_transaction, tenant_id, dry_run,
+            TransactionOutbox.status == "published",
+        )
+        deleted_reconciliation_outbox = _delete_in_batches(
+            session, ReconciliationOutbox, ReconciliationOutbox.created_at, oldest_discrepancy, tenant_id, dry_run,
+            ReconciliationOutbox.status == "published",
+        )
         eligible_audit_entries = _count_audit_archival_candidates(session, oldest_audit, tenant_id)
         # Audit rows are append-only by database policy. A separate archival
         # exporter must move eligible rows before any future purge capability.
         deleted_audit = 0
+
+        def post_delete_count(model, time_column, cutoff_dt, extra_filter=None):
+            filters = [time_column < cutoff_dt]
+            if tenant_id and hasattr(model, "tenant_id"):
+                filters.append(model.tenant_id == tenant_id)
+            if extra_filter is not None:
+                filters.append(extra_filter)
+            return session.scalar(select(func.count()).select_from(model).where(*filters)) or 0
 
         metrics = {
             "status": "success",
@@ -168,9 +205,19 @@ def cleanup_retention(tenant_id: Optional[str] = None, dry_run: bool = False) ->
             "deleted_processed_transactions": deleted_processed,
             "deleted_discrepancies": deleted_discrepancies,
             "deleted_dead_letters": deleted_dead_letters,
+            "deleted_transaction_outbox": deleted_transaction_outbox,
+            "deleted_reconciliation_outbox": deleted_reconciliation_outbox,
             "deleted_audit_entries": deleted_audit,
             "deleted_audit": deleted_audit,
             "eligible_audit_entries": eligible_audit_entries,
+            "post_delete_counts": {
+                "transactions": post_delete_count(Transaction, Transaction.created_at, oldest_transaction),
+                "processed_transactions": post_delete_count(ProcessedTransaction, ProcessedTransaction.received_at, oldest_transaction),
+                "discrepancies": post_delete_count(Discrepancy, Discrepancy.detected_at, oldest_discrepancy),
+                "dead_letters": post_delete_count(DeadLetter, DeadLetter.created_at, oldest_dead_letter),
+                "transaction_outbox": post_delete_count(TransactionOutbox, TransactionOutbox.created_at, oldest_transaction, TransactionOutbox.status == "published"),
+                "reconciliation_outbox": post_delete_count(ReconciliationOutbox, ReconciliationOutbox.created_at, oldest_discrepancy, ReconciliationOutbox.status == "published"),
+            },
             "retention_windows": {
                 "transactions_days": RETENTION_DAYS_TRANSACTIONS,
                 "discrepancies_days": RETENTION_DAYS_DISCREPANCIES,
@@ -188,6 +235,7 @@ def cleanup_retention(tenant_id: Optional[str] = None, dry_run: bool = False) ->
         raise
     finally:
         session.close()
+        cleanup_engine.dispose()
 
 
 if __name__ == "__main__":
@@ -199,8 +247,6 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     engine = get_engine()
-    Base.metadata.create_all(engine)
-
     result_summary = cleanup_retention(tenant_id=args.tenant_id, dry_run=args.dry_run)
     print("Retention Cleanup Summary:")
     for key, val in result_summary.items():

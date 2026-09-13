@@ -14,10 +14,10 @@ import os
 import secrets
 import uuid
 from datetime import datetime, timedelta, timezone
-from typing import Any, Dict, List, Optional
-from urllib import error as urllib_error
-from urllib import request as urllib_request
+from typing import Any, Dict, Iterable, List, Optional
+from urllib.parse import urlparse
 
+import requests
 from flask import Flask, Response, jsonify, request, g
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
@@ -340,11 +340,20 @@ def _fetch_oidc_metadata(issuer: str) -> Dict[str, Any]:
     if not issuer:
         raise ValueError("issuer is required")
     issuer_url = issuer.strip().rstrip("/")
+    parsed_issuer = urlparse(issuer_url)
+    if parsed_issuer.scheme != "https" or not parsed_issuer.hostname:
+        raise ValueError("OIDC issuer must use HTTPS and include a hostname")
     metadata_url = f"{issuer_url}/.well-known/openid-configuration"
     try:
-        with urllib_request.urlopen(urllib_request.Request(metadata_url, headers={"Accept": "application/json"}), timeout=10) as response:
-            payload = json.loads(response.read().decode("utf-8"))
-    except (urllib_error.URLError, ValueError, json.JSONDecodeError) as exc:
+        response = requests.get(
+            metadata_url,
+            headers={"Accept": "application/json"},
+            timeout=10,
+            allow_redirects=False,
+        )
+        response.raise_for_status()
+        payload = response.json()
+    except (requests.RequestException, ValueError, json.JSONDecodeError) as exc:
         raise ValueError(f"unable to fetch OIDC metadata for issuer {issuer}: {exc}") from exc
 
     required_fields = ["issuer", "authorization_endpoint", "token_endpoint", "jwks_uri"]
@@ -489,19 +498,10 @@ def _incident_belongs_to_tenant(session, incident_id: str, tenant_id: str) -> Op
     )
 
 
-@app.before_request
-def _ensure_tables():
-    """Ensure database schema tables are initialized."""
-    try:
-        Base.metadata.create_all(engine)
-    except Exception as exc:
-        logger.error("Failed to initialize database tables: %s", exc)
-
-
 @app.after_request
 def _inject_security_headers(response: Response) -> Response:
     """Inject robust security and CORS headers into all API responses."""
-    response.headers["Access-Control-Allow-Origin"] = "*"
+    response.headers["Access-Control-Allow-Origin"] = os.getenv("PESAGUARD_ALLOWED_ORIGIN", "")
     response.headers["Access-Control-Allow-Methods"] = "GET, POST, PUT, DELETE, OPTIONS"
     response.headers["Access-Control-Allow-Headers"] = "Content-Type, Authorization"
     response.headers["X-Content-Type-Options"] = "nosniff"
@@ -813,6 +813,9 @@ def oidc_provider_registry():
         return _api_error("invalid_request", "issuer is required to register an OIDC provider.", 400)
 
     metadata = data.get("metadata") or {}
+    provider_type = str(data.get("provider_type", "oidc")).strip().lower()
+    if provider_type not in {"oidc", "saml"}:
+        return _api_error("invalid_provider", "provider_type must be oidc or saml.", 400)
     try:
         if provider_type == "oidc":
             discovered = _fetch_oidc_metadata(issuer)
@@ -967,10 +970,11 @@ def oidc_provider_validate():
 
 
 @_idempotent_route("/auth/sso/oidc/config", methods=["GET"])
+@require_auth("manage:sso")
 def oidc_config_route():
     """Expose a minimal OIDC discovery document for external identity providers."""
     provider = None
-    tenant_id = request.args.get("tenant_id")
+    tenant_id = get_current_user().tenant_id
     if tenant_id:
         session = SessionLocal()
         try:
@@ -1026,52 +1030,22 @@ def list_devices():
 @require_auth("manage:sso")
 def oidc_authorize():
     """Issue a one-time authorization code only for a validated, configured external Issuer."""
-    params = request.args
-    client_id = params.get("client_id")
-    redirect_uri = params.get("redirect_uri")
-    response_type = params.get("response_type")
-    state = params.get("state")
-    issuer = params.get("issuer")
-    tenant_id = params.get("tenant_id") or get_current_user().tenant_id
-    if not client_id or not redirect_uri or response_type != "code":
-        return _api_error("invalid_request", "client_id, redirect_uri, and response_type=code are required.", 400)
-
-    provider = _resolve_oidc_provider(tenant_id=tenant_id, issuer=issuer)
-    if provider is None:
-        return _api_error("invalid_provider", "No active OIDC provider is registered for this tenant. Register and validate the issuer first.", 400)
-
-    if issuer and provider.issuer and provider.issuer.rstrip("/") != issuer.rstrip("/"):
-        return _api_error("invalid_provider", "The supplied issuer does not match the registered provider for this tenant.", 400)
-
-    try:
-        metadata = _fetch_oidc_metadata(provider.issuer)
-    except ValueError as exc:
-        if not issuer and provider.issuer and provider.issuer.rstrip("/") in {request.url_root.rstrip("/"), "https://localhost"}:
-            metadata = provider.provider_metadata or {
-                "issuer": provider.issuer,
-                "authorization_endpoint": provider.authorization_endpoint,
-                "token_endpoint": provider.token_endpoint,
-                "userinfo_endpoint": provider.userinfo_endpoint,
-                "jwks_uri": provider.jwks_uri,
-            }
-        else:
-            return _api_error("invalid_provider", str(exc), 400)
-
-    if provider.authorization_endpoint and metadata.get("authorization_endpoint") and provider.authorization_endpoint != metadata.get("authorization_endpoint"):
-        provider.authorization_endpoint = metadata.get("authorization_endpoint")
-    if provider.token_endpoint and metadata.get("token_endpoint") and provider.token_endpoint != metadata.get("token_endpoint"):
-        provider.token_endpoint = metadata.get("token_endpoint")
-    if provider.jwks_uri and metadata.get("jwks_uri") and provider.jwks_uri != metadata.get("jwks_uri"):
-        provider.jwks_uri = metadata.get("jwks_uri")
-
-    code = f"oidc_{uuid.uuid4().hex[:24]}"
-    redirect_target = f"{redirect_uri}?code={code}&state={state or ''}"
-    return redirect(redirect_target, code=302)
+    return _api_error(
+        "oidc_provider_exchange_required",
+        "OIDC authorization requires a configured provider integration and is not available through the local mock flow.",
+        501,
+    )
 
 
 @_idempotent_route("/auth/sso/oidc/callback", methods=["GET", "POST"])
 def oidc_callback():
     """Handle an external OIDC callback, enforce tenant policy, and provision the user from claims."""
+    return _api_error(
+        "oidc_exchange_required",
+        "OIDC callbacks must be processed through a validated provider code exchange.",
+        501,
+    )
+
     payload = request.get_json(silent=True) or request.args.to_dict(flat=True)
     code = payload.get("code")
     state = payload.get("state")
@@ -1190,16 +1164,11 @@ def oidc_token():
     if grant_type != "authorization_code" or not code or not client_id or not redirect_uri:
         return _api_error("invalid_request", "authorization_code grant requires client_id, code, and redirect_uri.", 400)
 
-    user = get_current_user() if hasattr(g, "user") and g.user else None
-    if not user:
-        user = AuthRBAC.verify_token(data.get("access_token")) if data.get("access_token") else None
-    if user is None:
-        user = IdentityAccessService.create_principal(
-            user_id="user_admin",
-            username="admin",
-            tenant_id="test-tenant",
-            roles=["admin"],
-        )
+    return _api_error(
+        "oidc_exchange_required",
+        "Authorization-code exchange is unavailable until provider token and state validation is configured.",
+        501,
+    )
 
     session_id = f"oidc_{uuid.uuid4().hex[:12]}"
     access_token = AuthRBAC.generate_token(
@@ -1279,10 +1248,19 @@ def issue_api_key_route():
     tenant_id = data.get("tenant_id") or get_current_user().tenant_id
     if tenant_id != get_current_user().tenant_id:
         return _api_success({"error": "tenant_access_denied"}, 403)
-    role = data.get("role") or "read_only"
+    role = AuthRBAC.normalize_role_name(data.get("role") or "read_only")
+    if role is None:
+        return _api_success({"error": "invalid_role"}, 400)
     key_value = f"pk_{secrets.token_urlsafe(32)}"
     key_hash = hashlib.sha256(key_value.encode("utf-8")).hexdigest()
-    scopes = data.get("scopes") or []
+    scopes = data.get("scopes")
+    role_permissions = set(AuthRBAC._get_permissions_for_roles([role]))
+    if scopes is None:
+        scopes = sorted(role_permissions)
+    if not isinstance(scopes, list) or not all(isinstance(scope, str) for scope in scopes):
+        return _api_success({"error": "invalid_scopes"}, 400)
+    if not set(scopes).issubset(role_permissions):
+        return _api_success({"error": "invalid_scopes"}, 400)
     expires_at = None
     if data.get("expires_in_days") is not None:
         try:
@@ -1299,7 +1277,7 @@ def issue_api_key_route():
             tenant_id=tenant_id,
             key_hash=key_hash,
             key_prefix=key_value[:16],
-            role=AuthRBAC.normalize_role_name(role),
+            role=role,
             scopes=scopes,
             expires_at=expires_at,
             api_metadata=data.get("metadata") or {},
@@ -1405,12 +1383,29 @@ def rotate_api_key_route(key_id: str):
 def create_mfa_challenge_route():
     """Create an MFA challenge for a user."""
     data = request.json or {}
-    user_id = data.get("user_id") or get_current_user().user_id
+    current_user = get_current_user()
+    user_id = data.get("user_id") or current_user.user_id
+    if user_id != current_user.user_id:
+        target_session = SessionLocal()
+        try:
+            target = target_session.query(UserAccount).filter_by(id=user_id, tenant_id=current_user.tenant_id).first()
+        finally:
+            target_session.close()
+        if target is None:
+            return _api_error("resource_not_found", "MFA user not found.", 404)
     challenge_id = f"mfa_{uuid.uuid4().hex[:12]}"
-    code = "123456"
+    code = f"{secrets.randbelow(1_000_000):06d}"
     session = SessionLocal()
     try:
-        record = MFAChallenge(id=challenge_id, user_id=user_id, code=code, status="pending")
+        record = MFAChallenge(
+            id=challenge_id,
+            user_id=user_id,
+            tenant_id=current_user.tenant_id,
+            code_hash=hashlib.sha256(code.encode("utf-8")).hexdigest(),
+            status="pending",
+            expires_at=datetime.now(timezone.utc) + timedelta(minutes=10),
+            attempts=0,
+        )
         session.add(record)
         session.commit()
         return _api_success({"challenge_id": challenge_id, "status": "pending", "user_id": user_id}, 201)
@@ -1431,11 +1426,20 @@ def verify_mfa_route():
 
     session = SessionLocal()
     try:
-        record = session.query(MFAChallenge).filter_by(id=challenge_id, user_id=user_id).first()
+        current_user = get_current_user()
+        record = session.query(MFAChallenge).filter_by(
+            id=challenge_id,
+            user_id=user_id,
+            tenant_id=current_user.tenant_id,
+        ).first()
         if not record:
             return _api_error("resource_not_found", "MFA challenge not found.", 404)
-        verified = record.code == str(code)
-        record.status = "verified" if verified else "failed"
+        now = datetime.now(timezone.utc)
+        if record.status != "pending" or record.expires_at <= now or record.attempts >= 5:
+            return _api_success({"verified": False, "status": record.status}, 200)
+        record.attempts += 1
+        verified = hmac.compare_digest(record.code_hash, hashlib.sha256(str(code).encode("utf-8")).hexdigest())
+        record.status = "verified" if verified else ("failed" if record.attempts >= 5 else "pending")
         session.commit()
         return _api_success({"verified": verified, "status": record.status, "challenge_id": challenge_id}, 200)
     finally:
@@ -1447,12 +1451,29 @@ def verify_mfa_route():
 def create_passwordless_challenge_route():
     """Create a passwordless challenge for a user."""
     data = request.json or {}
-    user_id = data.get("user_id") or get_current_user().user_id
+    current_user = get_current_user()
+    user_id = data.get("user_id") or current_user.user_id
+    if user_id != current_user.user_id:
+        target_session = SessionLocal()
+        try:
+            target = target_session.query(UserAccount).filter_by(id=user_id, tenant_id=current_user.tenant_id).first()
+        finally:
+            target_session.close()
+        if target is None:
+            return _api_error("resource_not_found", "Passwordless user not found.", 404)
     challenge_id = f"pw_{uuid.uuid4().hex[:12]}"
-    token = "otp-123456"
+    token = secrets.token_urlsafe(32)
     session = SessionLocal()
     try:
-        record = PasswordlessChallenge(id=challenge_id, user_id=user_id, token=token, status="pending")
+        record = PasswordlessChallenge(
+            id=challenge_id,
+            user_id=user_id,
+            tenant_id=current_user.tenant_id,
+            token_hash=hashlib.sha256(token.encode("utf-8")).hexdigest(),
+            status="pending",
+            expires_at=datetime.now(timezone.utc) + timedelta(minutes=10),
+            attempts=0,
+        )
         session.add(record)
         session.commit()
         return _api_success({"challenge_id": challenge_id, "status": "pending", "user_id": user_id}, 201)
@@ -1473,11 +1494,20 @@ def verify_passwordless_route():
 
     session = SessionLocal()
     try:
-        record = session.query(PasswordlessChallenge).filter_by(id=challenge_id, user_id=user_id).first()
+        current_user = get_current_user()
+        record = session.query(PasswordlessChallenge).filter_by(
+            id=challenge_id,
+            user_id=user_id,
+            tenant_id=current_user.tenant_id,
+        ).first()
         if not record:
             return _api_error("resource_not_found", "Passwordless challenge not found.", 404)
-        verified = record.token == str(token)
-        record.status = "verified" if verified else "failed"
+        now = datetime.now(timezone.utc)
+        if record.status != "pending" or record.expires_at <= now or record.attempts >= 5:
+            return _api_success({"verified": False, "status": record.status}, 200)
+        record.attempts += 1
+        verified = hmac.compare_digest(record.token_hash, hashlib.sha256(str(token).encode("utf-8")).hexdigest())
+        record.status = "verified" if verified else ("failed" if record.attempts >= 5 else "pending")
         session.commit()
         return _api_success({"verified": verified, "status": record.status, "challenge_id": challenge_id}, 200)
     finally:
@@ -1659,6 +1689,7 @@ def list_escalation_rules():
 
 @_idempotent_route("/escalation-rules/<rule_id>", methods=["PUT"])
 @require_auth("write:escalation_rules")
+@require_tenant_access()
 def update_escalation_rule(rule_id: str):
     """Update an existing escalation rule configuration."""
     data = request.json or {}
@@ -1666,7 +1697,10 @@ def update_escalation_rule(rule_id: str):
 
     try:
         engine_instance = EscalationEngine(session)
-        result = engine_instance.update_rule(rule_id, **data)
+        tenant_id = data.get("tenant_id") or get_current_user().tenant_id
+        rule_data = dict(data)
+        rule_data.pop("tenant_id", None)
+        result = engine_instance.update_rule(rule_id, tenant_id=tenant_id, **rule_data)
         return jsonify(result), 200
     finally:
         session.close()
@@ -1737,6 +1771,7 @@ def get_active_on_call():
 
 @_idempotent_route("/on-call/schedule/<operator_id>", methods=["GET"])
 @require_auth("read:discrepancies")
+@require_tenant_access()
 def get_operator_schedule(operator_id: str):
     """Retrieve an operator's on-call schedule window."""
     tenant_id = request.args.get("tenant_id")
@@ -2112,5 +2147,5 @@ if __name__ == "__main__":
     if debug_mode:
         logger.warning("Running with debug=True — never do this in production.")
     port = int(os.getenv("PORT", 5002))
-    app.run(debug=debug_mode, host="0.0.0.0", port=port)
+    app.run(debug=debug_mode, host=os.getenv("PESAGUARD_BIND_HOST", "127.0.0.1"), port=port)
 

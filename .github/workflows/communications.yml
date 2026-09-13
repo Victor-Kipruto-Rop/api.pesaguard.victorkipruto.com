@@ -5,14 +5,14 @@ on:
     branches: [ main, staging ]
     paths:
       - 'pesaguard_backend_pipeline/communications/**'
-      - 'pesaguard_backend_pipeline/test_communications*.py'
-      - 'alembic/versions/20260908_add_communication*.py'
+      - 'pesaguard_backend_pipeline/tests/test_communications*.py'
+      - 'pesaguard_backend_pipeline/alembic/versions/20260908_add_communication*.py'
   pull_request:
     branches: [ main, staging ]
     paths:
       - 'pesaguard_backend_pipeline/communications/**'
-      - 'pesaguard_backend_pipeline/test_communications*.py'
-      - 'alembic/versions/20260908_add_communication*.py'
+      - 'pesaguard_backend_pipeline/tests/test_communications*.py'
+      - 'pesaguard_backend_pipeline/alembic/versions/20260908_add_communication*.py'
 
 jobs:
   communications-gates:
@@ -99,10 +99,9 @@ jobs:
           pytest pesaguard_backend_pipeline/test_communications_chaos.py -v --tb=short
 
       - name: Security scan (bandit)
-        continue-on-error: true
         run: |
           pip install bandit
-          bandit -r pesaguard_backend_pipeline/communications/ -q || true
+          bandit -r pesaguard_backend_pipeline/communications/ -q
 
       - name: Verify no TODO/FIXME in communications code
         run: |

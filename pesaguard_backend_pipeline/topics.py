@@ -40,11 +40,14 @@ ALL_TOPICS: List[str] = [
 ]
 
 # Production Topic Provisioning Specifications
+# Production deployments should set KAFKA_REPLICATION_FACTOR explicitly (normally 2+).
+KAFKA_REPLICATION_FACTOR = int(os.getenv("KAFKA_REPLICATION_FACTOR", "2"))
+
 # Retentions expressed in milliseconds (7 days = 604,800,000 ms)
 TOPIC_SPECIFICATIONS: Dict[str, Dict[str, Any]] = {
     TOPIC_TRANSACTIONS_RAW: {
         "num_partitions": int(os.getenv("KAFKA_PARTITIONS_RAW", "6")),
-        "replication_factor": int(os.getenv("KAFKA_REPLICATION_FACTOR", "2")),
+        "replication_factor": KAFKA_REPLICATION_FACTOR,
         "configs": {
             "retention.ms": "604800000",  # 7 Days retention
             "cleanup.policy": "delete",
@@ -52,7 +55,7 @@ TOPIC_SPECIFICATIONS: Dict[str, Dict[str, Any]] = {
     },
     TOPIC_TRANSACTIONS_MATCHED: {
         "num_partitions": int(os.getenv("KAFKA_PARTITIONS_MATCHED", "3")),
-        "replication_factor": int(os.getenv("KAFKA_REPLICATION_FACTOR", "2")),
+        "replication_factor": KAFKA_REPLICATION_FACTOR,
         "configs": {
             "retention.ms": "2592000000",  # 30 Days retention
             "cleanup.policy": "delete",
@@ -60,7 +63,7 @@ TOPIC_SPECIFICATIONS: Dict[str, Dict[str, Any]] = {
     },
     TOPIC_DISCREPANCIES: {
         "num_partitions": int(os.getenv("KAFKA_PARTITIONS_DISCREPANCIES", "3")),
-        "replication_factor": int(os.getenv("KAFKA_REPLICATION_FACTOR", "2")),
+        "replication_factor": KAFKA_REPLICATION_FACTOR,
         "configs": {
             "retention.ms": "7776000000",  # 90 Days retention
             "cleanup.policy": "delete",
@@ -68,31 +71,31 @@ TOPIC_SPECIFICATIONS: Dict[str, Dict[str, Any]] = {
     },
     TOPIC_DEAD_LETTERS: {
         "num_partitions": 3,
-        "replication_factor": int(os.getenv("KAFKA_REPLICATION_FACTOR", "2")),
+        "replication_factor": KAFKA_REPLICATION_FACTOR,
         "configs": {
             "retention.ms": "2592000000",  # 30 Days retention
         },
     },
     TOPIC_AUDIT_EVENTS: {
         "num_partitions": 3,
-        "replication_factor": int(os.getenv("KAFKA_REPLICATION_FACTOR", "2")),
+        "replication_factor": KAFKA_REPLICATION_FACTOR,
         "configs": {
             "retention.ms": "31536000000",  # 365 Days retention
         },
     },
     TOPIC_NOTIFICATION_EVENTS: {
         "num_partitions": 3,
-        "replication_factor": int(os.getenv("KAFKA_REPLICATION_FACTOR", "2")),
+        "replication_factor": KAFKA_REPLICATION_FACTOR,
         "configs": {"retention.ms": "2592000000"},
     },
     TOPIC_NOTIFICATION_STATUS: {
         "num_partitions": 3,
-        "replication_factor": int(os.getenv("KAFKA_REPLICATION_FACTOR", "2")),
+        "replication_factor": KAFKA_REPLICATION_FACTOR,
         "configs": {"retention.ms": "2592000000"},
     },
     TOPIC_COMMUNICATION_AUDIT: {
         "num_partitions": 3,
-        "replication_factor": int(os.getenv("KAFKA_REPLICATION_FACTOR", "2")),
+        "replication_factor": KAFKA_REPLICATION_FACTOR,
         "configs": {"retention.ms": "31536000000"},
     },
 }
@@ -129,6 +132,9 @@ def provision_topics(bootstrap_servers: Optional[str] = None) -> bool:
         )
 
         existing_topics = set(admin_client.list_topics())
+        cluster = admin_client.describe_cluster()
+        broker_count = max(1, len(cluster.get("brokers", [])))
+        replication_factor = min(KAFKA_REPLICATION_FACTOR, broker_count)
         new_topics: List[NewTopic] = []
 
         for topic_name, spec in TOPIC_SPECIFICATIONS.items():
@@ -137,7 +143,7 @@ def provision_topics(bootstrap_servers: Optional[str] = None) -> bool:
                     NewTopic(
                         name=topic_name,
                         num_partitions=spec["num_partitions"],
-                        replication_factor=spec["replication_factor"],
+                        replication_factor=min(spec["replication_factor"], replication_factor),
                         topic_configs=spec.get("configs", {}),
                     )
                 )

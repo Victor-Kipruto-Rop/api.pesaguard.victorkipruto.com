@@ -8,6 +8,7 @@ can distinguish between exact matches, partial matches, missing payments, and du
 from __future__ import annotations
 
 import logging
+from decimal import Decimal, InvalidOperation
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Sequence, Set
 
@@ -72,7 +73,7 @@ def evaluate_transaction(
 
     # Resolve tenant config overrides
     reconciliation_cfg = (tenant_settings or {}).get("reconciliation", {}) if tenant_settings else {}
-    tolerance_percent = float(reconciliation_cfg.get("tolerance_percent", 0.5))
+    tolerance_percent = Decimal(str(reconciliation_cfg.get("tolerance_percent", "0.5")))
     allow_partial = bool(reconciliation_cfg.get("allow_partial", True))
     
     if reconciliation_cfg.get("window_minutes") is not None:
@@ -133,7 +134,7 @@ def _find_best_match(
     event: Dict[str, Any],
     internal_records: Sequence[Dict[str, Any]],
     window_minutes: int = 15,
-    tolerance_percent: float = 0.5,
+    tolerance_percent: Decimal = Decimal("0.5"),
     allow_partial: bool = True,
 ) -> Optional[Dict[str, Any]]:
     """Match callback event against candidate internal records."""
@@ -143,7 +144,7 @@ def _find_best_match(
 
     phone = str(event.get("MSISDN") or event.get("phone_number") or "").strip()
     event_time = _parse_event_time(event.get("TransTime"))
-    allowed_delta = max(0.01, abs(amount) * (float(tolerance_percent) / 100.0))
+    allowed_delta = max(Decimal("0.01"), abs(amount) * (tolerance_percent / Decimal("100")))
 
     candidates = []
     for record in internal_records:
@@ -201,18 +202,15 @@ def _find_best_match(
     return candidates[0]
 
 
-def _coerce_amount(value: Any) -> Optional[float]:
-    """Safely cast raw values to float."""
+def _coerce_amount(value: Any) -> Optional[Decimal]:
+    """Safely parse monetary values as fixed-precision decimals."""
     if value is None:
         return None
     try:
-        val = float(value)
-        return val if not math.isnan(val) else None
-    except (TypeError, ValueError):
+        val = Decimal(str(value)).quantize(Decimal("0.01"))
+        return val if val >= 0 else None
+    except (InvalidOperation, TypeError, ValueError):
         return None
-
-
-import math
 
 
 def _parse_event_time(value: Any) -> Optional[datetime]:

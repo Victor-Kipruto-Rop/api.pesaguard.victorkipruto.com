@@ -11,8 +11,9 @@ import json
 import logging
 import os
 import re
+from decimal import Decimal
 from abc import ABC, abstractmethod
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, Iterable, List, Optional
 
 import requests
@@ -54,6 +55,17 @@ class BaseConnector(ABC):
     def fetch_recent_records(self, since_minutes: int = 15) -> Iterable[Dict[str, Any]]:
         """Return internal records created or modified within the last N minutes."""
         raise NotImplementedError
+
+    def fetch_candidate_records(
+        self,
+        since_minutes: int = 15,
+        amount: Optional[Decimal] = None,
+        phone_number: Optional[str] = None,
+        tolerance: Optional[Decimal] = None,
+        limit: int = 500,
+    ) -> Iterable[Dict[str, Any]]:
+        """Return a bounded candidate set; non-SQL connectors use a capped fallback."""
+        return list(self.fetch_recent_records(since_minutes=since_minutes))[:max(1, min(limit, 5000))]
 
 
 # Default field mapping for internal ledger columns
@@ -100,6 +112,49 @@ class PostgresConnector(BaseConnector):
         """Query recent internal transactions from Postgres safely."""
         if not self.connection_string:
             logger.warning("PostgresConnector execution skipped: Connection string is empty.")
+            return []
+
+    def fetch_candidate_records(
+        self,
+        since_minutes: int = 15,
+        amount: Optional[Decimal] = None,
+        phone_number: Optional[str] = None,
+        tolerance: Optional[Decimal] = None,
+        limit: int = 500,
+    ) -> List[Dict[str, Any]]:
+        """Push bounded candidate filtering into PostgreSQL before Python scoring."""
+        if not self.connection_string:
+            return []
+        try:
+            safe_table = _validate_identifier(self.table_name, "table")
+            safe_columns = {k: _validate_identifier(v, f"column mapping for '{k}'") for k, v in self.mapping.items()}
+            engine = self._get_engine()
+            since_dt = datetime.now(timezone.utc) - timedelta(minutes=since_minutes)
+            conditions = [f"{safe_columns['timestamp']} >= :since"]
+            params: Dict[str, Any] = {"since": since_dt, "limit": max(1, min(limit, 5000))}
+            if amount is not None and tolerance is not None:
+                conditions.append(f"{safe_columns['amount']} BETWEEN :lower_amount AND :upper_amount")
+                params["lower_amount"] = max(Decimal("0"), amount - tolerance)
+                params["upper_amount"] = amount + tolerance
+            if phone_number:
+                conditions.append(f"{safe_columns['phone_number']} = :phone_number")
+                params["phone_number"] = phone_number
+            query = text(
+                f"SELECT {safe_columns['internal_ref']}, {safe_columns['amount']}, {safe_columns['phone_number']}, "
+                f"{safe_columns['timestamp']}, {safe_columns['status']} FROM {safe_table} "
+                f"WHERE {' AND '.join(conditions)} ORDER BY {safe_columns['timestamp']} DESC LIMIT :limit"
+            )
+            with engine.connect() as connection:
+                rows = connection.execute(query, params).fetchall()
+            return [{
+                "internal_ref": str(row[0]),
+                "amount": row[1],
+                "phone_number": str(row[2] or ""),
+                "timestamp": row[3].isoformat() if hasattr(row[3], "isoformat") else str(row[3]),
+                "status": str(row[4] or "pending"),
+            } for row in rows]
+        except Exception as exc:
+            logger.exception("Failed fetching bounded ledger candidates: %s", exc)
             return []
 
         try:

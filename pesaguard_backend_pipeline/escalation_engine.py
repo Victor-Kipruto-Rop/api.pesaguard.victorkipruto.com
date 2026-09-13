@@ -15,6 +15,7 @@ from datetime import datetime, timezone, timedelta
 from typing import Dict, List, Any, Optional, Callable
 
 import requests
+from webhook_manager import _validate_webhook_url
 from sqlalchemy.orm import Session, attributes
 
 from models import EscalationRule, Discrepancy, OnCallRotation
@@ -191,7 +192,7 @@ class EscalationEngine:
         incident: Discrepancy,
     ) -> Dict[str, Any]:
         """Reassign incident to a target or currently active on-call operator."""
-        target_operator = rule.get("target")
+        target_operator = rule.get("target") or self._get_on_call_operator(incident.tenant_id, escalation_level=1)
 
         if not target_operator:
             target_operator = self._get_on_call_operator(incident.tenant_id, escalation_level=1)
@@ -265,6 +266,9 @@ class EscalationEngine:
         webhook_url = rule.get("webhook_url")
         if not webhook_url:
             return {"status": "webhook_error", "reason": "no_webhook_url"}
+        rejection_reason = _validate_webhook_url(webhook_url)
+        if rejection_reason:
+            return {"status": "webhook_error", "reason": rejection_reason}
 
         payload = {
             "event_type": "escalation",
@@ -278,7 +282,10 @@ class EscalationEngine:
         }
 
         body_bytes = json.dumps(payload, sort_keys=True).encode("utf-8")
-        secret = os.getenv("WEBHOOK_SECRET_KEY", "pesaguard_default_webhook_secret").encode("utf-8")
+        secret_value = os.getenv("WEBHOOK_SECRET_KEY")
+        if not secret_value:
+            return {"status": "webhook_error", "reason": "webhook_secret_not_configured"}
+        secret = secret_value.encode("utf-8")
         signature = hmac.new(secret, body_bytes, hashlib.sha256).hexdigest()
 
         headers = {
@@ -288,7 +295,7 @@ class EscalationEngine:
         }
 
         try:
-            response = requests.post(webhook_url, json=payload, headers=headers, timeout=10)
+            response = requests.post(webhook_url, json=payload, headers=headers, timeout=10, allow_redirects=False)
             return {
                 "status": "webhook_triggered",
                 "url": webhook_url,

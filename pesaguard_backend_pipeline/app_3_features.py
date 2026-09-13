@@ -102,15 +102,6 @@ def _incident_belongs_to_tenant(session, incident_id: str, tenant_id: str) -> Op
     )
 
 
-@app.before_request
-def _ensure_tables():
-    """Ensure database schema tables are initialized."""
-    try:
-        Base.metadata.create_all(engine)
-    except Exception as exc:
-        logger.error("Failed to initialize database tables: %s", exc)
-
-
 @app.after_request
 def _inject_security_headers(response: Response) -> Response:
     """Inject robust security and CORS headers into all API responses."""
@@ -189,34 +180,34 @@ def _verify_credentials(username: str, password: str) -> Optional[Dict[str, Any]
 if "login" not in app.view_functions:
     @app.route("/auth/login", methods=["POST"])
     def login():
-    data = request.json or {}
-    username = data.get("username")
-    password = data.get("password")
+        data = request.json or {}
+        username = data.get("username")
+        password = data.get("password")
 
-    if not username or not password:
-        return jsonify({"error": "missing_credentials", "message": "Username and password are required."}), 400
+        if not username or not password:
+            return jsonify({"error": "missing_credentials", "message": "Username and password are required."}), 400
 
-    user = _verify_credentials(username, password)
-    if not user:
-        logger.warning("Failed login attempt for username=%s", username)
-        return jsonify({"error": "invalid_credentials", "message": "Invalid username or password."}), 401
+        user = _verify_credentials(username, password)
+        if not user:
+            logger.warning("Failed login attempt for username=%s", username)
+            return jsonify({"error": "invalid_credentials", "message": "Invalid username or password."}), 401
 
-    token = AuthRBAC.generate_token(
-        user_id=f"user_{username}",
-        username=username,
-        tenant_id=user["tenant_id"],
-        roles=user.get("roles", ["operator"]),
-    )
+        token = AuthRBAC.generate_token(
+            user_id=f"user_{username}",
+            username=username,
+            tenant_id=user["tenant_id"],
+            roles=user.get("roles", ["operator"]),
+        )
 
-    logger.info("Successful login for username=%s tenant_id=%s", username, user["tenant_id"])
-    return jsonify({
-        "token": token,
-        "user_id": f"user_{username}",
-        "username": username,
-        "tenant_id": user["tenant_id"],
-        "roles": user.get("roles", ["operator"]),
-        "expires_in": 86400,
-    }), 200
+        logger.info("Successful login for username=%s tenant_id=%s", username, user["tenant_id"])
+        return jsonify({
+            "token": token,
+            "user_id": f"user_{username}",
+            "username": username,
+            "tenant_id": user["tenant_id"],
+            "roles": user.get("roles", ["operator"]),
+            "expires_in": 86400,
+        }), 200
 
 
 @app.route("/auth/verify", methods=["GET"])
@@ -876,5 +867,5 @@ if __name__ == "__main__":
     if debug_mode:
         logger.warning("Running with debug=True — never do this in production.")
     port = int(os.getenv("PORT", 5002))
-    app.run(debug=debug_mode, host="0.0.0.0", port=port)
+    app.run(debug=debug_mode, host=os.getenv("PESAGUARD_BIND_HOST", "127.0.0.1"), port=port)
 

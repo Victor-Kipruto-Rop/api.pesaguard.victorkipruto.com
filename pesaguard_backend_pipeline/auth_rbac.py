@@ -374,6 +374,8 @@ class AuthRBAC:
             "send:communications",
             "read:communications",
             "export:communications",
+            "manage:api_keys",
+            "manage:mfa",
         ],
         "platform-admin": [
             "read:discrepancies",
@@ -399,6 +401,8 @@ class AuthRBAC:
             "send:communications",
             "read:communications",
             "export:communications",
+            "manage:api_keys",
+            "manage:mfa",
             "manage:all_tenants",
         ],
         "operator": [
@@ -978,6 +982,55 @@ class AuthRBAC:
             user.tenant_id == tenant_id or cls.check_permission(user, "manage:all_tenants")
         )
 
+    @classmethod
+    def verify_api_key(cls, api_key: str) -> Optional[User]:
+        """Verify a tenant-scoped API key and return a constrained principal."""
+        if not isinstance(api_key, str) or not api_key.startswith("pk_"):
+            return None
+
+        _ensure_revocation_store_ready()
+        try:
+            from pesaguard_backend_pipeline.models import ApiKeyRecord
+        except ImportError:
+            from models import ApiKeyRecord
+
+        key_hash = hashlib.sha256(api_key.encode("utf-8")).hexdigest()
+        session = _RevocationSession()
+        try:
+            record = session.query(ApiKeyRecord).filter(
+                ApiKeyRecord.key_hash == key_hash,
+                ApiKeyRecord.active.is_(True),
+                ApiKeyRecord.revoked_at.is_(None),
+            ).first()
+            now = datetime.now(timezone.utc)
+            if record is None or (record.expires_at is not None and record.expires_at <= now):
+                return None
+
+            role = cls.normalize_role_name(record.role)
+            if role is None:
+                logger.warning("API key %s has an invalid role", record.id)
+                return None
+            role_permissions = set(cls._get_permissions_for_roles([role]))
+            scopes = record.scopes or []
+            if not isinstance(scopes, list) or not all(isinstance(scope, str) for scope in scopes):
+                return None
+            permissions = sorted(role_permissions.intersection(scopes))
+            record.last_used_at = now
+            session.commit()
+            return User(
+                user_id=record.id,
+                username=f"api-key:{record.key_prefix}",
+                tenant_id=record.tenant_id,
+                roles=[role],
+                permissions=permissions,
+            )
+        except Exception as exc:
+            session.rollback()
+            logger.exception("Failed to verify API key")
+            raise AuthenticationUnavailable("API-key authentication is unavailable") from exc
+        finally:
+            session.close()
+
 
 def require_auth(required_permission: Optional[str] = None):
     """Route decorator enforcing JWT bearer token authentication and permission checks."""
@@ -986,24 +1039,30 @@ def require_auth(required_permission: Optional[str] = None):
         def decorated_function(*args, **kwargs):
             authentication_required = auth_required()
             auth_header = request.headers.get("Authorization", "")
+            api_key = request.headers.get("X-API-Key", "").strip()
 
-            if not auth_header:
+            if not auth_header and api_key:
+                user = AuthRBAC.verify_api_key(api_key)
+                if user is None:
+                    return jsonify({"error": "invalid_api_key", "message": "API key is invalid, expired, or revoked."}), 401
+            elif not auth_header:
                 if not authentication_required:
                     return f(*args, **kwargs)
                 return jsonify({"error": "missing_auth_header", "message": "Authorization header is required."}), 401
 
-            user = getattr(g, "user", None)
-            if user is None:
-                token = parse_bearer_token(auth_header)
-                if token is None:
-                    return jsonify({"error": "invalid_auth_header", "message": "Malformed Authorization header format."}), 401
-                try:
-                    user = AuthRBAC.verify_token(token)
-                except AuthenticationUnavailable:
-                    return jsonify({
-                        "error": "authentication_unavailable",
-                        "message": "Authentication state is temporarily unavailable.",
-                    }), 503
+            else:
+                user = getattr(g, "user", None)
+                if user is None:
+                    token = parse_bearer_token(auth_header)
+                    if token is None:
+                        return jsonify({"error": "invalid_auth_header", "message": "Malformed Authorization header format."}), 401
+                    try:
+                        user = AuthRBAC.verify_token(token)
+                    except AuthenticationUnavailable:
+                        return jsonify({
+                            "error": "authentication_unavailable",
+                            "message": "Authentication state is temporarily unavailable.",
+                        }), 503
             if not user:
                 return jsonify({"error": "invalid_token", "message": "Token is invalid, expired, or revoked."}), 401
 

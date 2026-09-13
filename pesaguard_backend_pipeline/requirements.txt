@@ -24,6 +24,7 @@ requests==2.33.0
 PyJWT==2.13.0
 cryptography==46.0.5
 python-dateutil==2.9.0.post0
+tzdata==2025.2
 
 # Telemetry & Observability
 prometheus-client==0.21.1

@@ -30,13 +30,6 @@ else:
     engine = create_engine(DB_URL, pool_pre_ping=True, pool_size=5, max_overflow=10)
 Session = sessionmaker(bind=engine, expire_on_commit=False)
 
-# Ensure schema exists when run as isolated standalone script
-try:
-    Base.metadata.create_all(engine)
-except Exception as exc:
-    logger.debug("Schema verification notice: %s", exc)
-
-
 def generate_report_for_tenant(
     tenant_id: str,
     days: int = 1,

@@ -12,13 +12,12 @@ from werkzeug.exceptions import HTTPException
 
 from observability import init_sentry
 
-from background_tasks import enqueue_transaction_event
+from background_tasks import enqueue_transaction_outbox_drain
 from event_store import EventStore, ProcessResult, provider_account_id
 from health import build_health_payload
 from idempotency import derive_idempotency_key
 from logging_utils import configure_logging, get_correlation_id, set_correlation_id
 from metrics import build_metrics_payload
-from producer import publish_transaction_event
 from rate_limiter import RateLimiter
 from security_helpers import (
     get_client_ip,
@@ -29,6 +28,7 @@ from security_helpers import (
 from shared.daraja.validator import validate_daraja_callback
 from tenant_settings import TenantSettingsStore
 from validators import validate_daraja_payload
+from auth_rbac import AuthRBAC, get_current_user, require_auth
 
 configure_logging()
 logger = logging.getLogger("pesaguard.webhook")
@@ -41,13 +41,12 @@ event_store = EventStore()
 webhook_rate_limiter = RateLimiter()
 webhook_rate_limiter.set_limits(int(os.getenv("PESAGUARD_WEBHOOK_RATE_LIMIT_PER_MINUTE", "30")))
 
-KAFKA_TOPIC = os.getenv("KAFKA_TOPIC_TRANSACTIONS", "mpesa.transactions.raw")
 tenant_store = TenantSettingsStore()
 
 
 def _require_admin() -> None:
     """Enforce admin token authentication on sensitive configuration endpoints."""
-    token = request.headers.get("X-Admin-Token") or request.args.get("admin_token")
+    token = request.headers.get("X-Admin-Token")
     admin_api_token = os.getenv("PESAGUARD_ADMIN_API_TOKEN")
     if not admin_api_token or token != admin_api_token:
         abort(403)
@@ -85,9 +84,10 @@ def admin_set_locale(tenant_id: str):
 
 
 @app.route("/tenant/current", methods=["GET"])
+@require_auth("read:settings")
 def public_get_current_tenant():
     """Public, read-only endpoint returning limited tenant preferences for the current runtime tenant."""
-    tenant_id = os.getenv("TENANT_ID", "default")
+    tenant_id = get_current_user().tenant_id
     settings = tenant_store.get(tenant_id)
     public = {
         "tenant_id": tenant_id,
@@ -98,10 +98,12 @@ def public_get_current_tenant():
 
 
 @app.route("/tenant/current/locale", methods=["GET"])
+@require_auth("read:settings")
 def public_get_current_locale():
     """Return tenant default, optional user override, and effective locale."""
-    tenant_id = os.getenv("TENANT_ID", "default")
-    user_id = request.args.get("user_id")
+    current_user = get_current_user()
+    tenant_id = current_user.tenant_id
+    user_id = current_user.user_id
     settings = tenant_store.get(tenant_id)
     user_locale = None
     if user_id:
@@ -118,6 +120,7 @@ def public_get_current_locale():
 
 
 @app.route("/tenant/current/locale", methods=["POST"])
+@require_auth("write:settings")
 def public_set_current_tenant_locale():
     """Persist the current tenant's preferred locale through the public tenant endpoint."""
     payload = request.get_json(silent=True) or {}
@@ -125,12 +128,13 @@ def public_set_current_tenant_locale():
     if not preferred:
         return jsonify({"error": "preferred_locale required"}), 400
 
-    tenant_id = os.getenv("TENANT_ID", "default")
+    tenant_id = get_current_user().tenant_id
     updated = tenant_store.update(tenant_id, {"preferred_locale": preferred})
     return jsonify({"tenant_id": tenant_id, "preferred_locale": updated.get("preferred_locale")}), 200
 
 
 @app.route("/tenant/current/user-locale", methods=["POST"])
+@require_auth("write:settings")
 def public_set_user_locale():
     """Persist a per-user locale override for the current tenant."""
     payload = request.get_json(silent=True) or {}
@@ -139,7 +143,10 @@ def public_set_user_locale():
     if not user_id:
         return jsonify({"error": "user_id required"}), 400
 
-    tenant_id = os.getenv("TENANT_ID", "default")
+    current_user = get_current_user()
+    if str(user_id) != current_user.user_id and not AuthRBAC.check_permission(current_user, "manage:users"):
+        return jsonify({"error": "user_access_denied"}), 403
+    tenant_id = current_user.tenant_id
     existing = tenant_store.get(tenant_id)
     overrides = dict(existing.get("user_locale_overrides") or {})
     if preferred is None or preferred == "":
@@ -322,15 +329,11 @@ def mpesa_confirmation():
     except Exception:
         pass
 
-    try:
-        queued = enqueue_transaction_event(KAFKA_TOPIC, payload)
-        if queued.get("status") == "queued":
-            logger.info("Transaction event queued to background job", extra={"trans_id": trans_id})
-        else:
-            publish_transaction_event(KAFKA_TOPIC, payload)
-            logger.info("Transaction event published to Kafka (sync fallback)", extra={"trans_id": trans_id})
-    except Exception:
-        logger.warning("Failed to publish event (queued for manual replay)", extra={"trans_id": trans_id}, exc_info=True)
+    queued = enqueue_transaction_outbox_drain()
+    logger.info(
+        "Transaction outbox delivery scheduled",
+        extra={"trans_id": trans_id, "delivery_status": queued.get("status")},
+    )
 
     return jsonify({"ResultCode": 0, "ResultDesc": "Accepted"}), 200
 
@@ -345,4 +348,4 @@ def mpesa_validation():
 
 if __name__ == "__main__":
     port = int(os.getenv("PORT", 5000))
-    app.run(host="0.0.0.0", port=port)
+    app.run(host=os.getenv("PESAGUARD_BIND_HOST", "127.0.0.1"), port=port)

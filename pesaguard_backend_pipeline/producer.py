@@ -153,17 +153,21 @@ def _fallback_to_dead_letter_queue(topic: str, payload: Dict[str, Any], error_re
     try:
         from models import DeadLetter
         from app_2 import SessionLocal
+        from data_protection import protect_payload
+        import hashlib
         import uuid
         from datetime import datetime, timezone
 
         tenant_id = payload.get("tenant_id") or payload.get("TenantID") or "default"
+        trans_id = payload.get("TransID") or payload.get("trans_id") or "unknown"
+        event_key = hashlib.sha256(f"{tenant_id}:{trans_id}:{topic}:{error_reason[:200]}".encode("utf-8")).hexdigest()
         
         with SessionLocal() as session:
             dlq_record = DeadLetter(
-                id=f"dlq_{uuid.uuid4().hex[:12]}",
+                id=f"dlq_{event_key[:24]}",
                 tenant_id=tenant_id,
                 reason=f"Kafka Delivery Failure: {error_reason[:200]}",
-                payload=payload,
+                payload=protect_payload(payload),
                 error_detail=f"Target Topic: {topic}",
                 attempts=0,
                 processed=False,
@@ -174,6 +178,7 @@ def _fallback_to_dead_letter_queue(topic: str, payload: Dict[str, Any], error_re
             logger.info("Fallback succeeded: Event for trans_id=%s persisted to DeadLetter DB store.", payload.get("TransID") or payload.get("trans_id"))
     except Exception as exc:
         logger.exception("DLQ fallback persistence failed for event topic=%s: %s", topic, exc)
+        raise RuntimeError("dead-letter persistence failed") from exc
 
 
 def publish_transaction_event(

@@ -61,6 +61,9 @@ jobs:
             pip install Flask==3.1.0 SQLAlchemy==2.0.38 psycopg2-binary==2.9.10 redis==5.2.1 rq==2.1.0 pytest==8.3.4 requests==2.32.3 PyJWT==2.10.1
           fi
 
+      - name: Compile Python modules
+        run: python -m compileall -q pesaguard_backend_pipeline
+
       - name: Run test suite
         env:
           PYTHONPATH: .

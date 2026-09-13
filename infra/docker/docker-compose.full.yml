@@ -5,10 +5,8 @@ services:
     image: postgres:16
     environment:
       POSTGRES_USER: pesaguard
-      POSTGRES_PASSWORD: pesaguard
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set}
       POSTGRES_DB: pesaguard
-    ports:
-      - "5433:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
 
@@ -16,13 +14,11 @@ services:
     image: confluentinc/cp-kafka:7.6.0
     depends_on:
       - zookeeper
-    ports:
-      - "9092:9092"
     environment:
       KAFKA_BROKER_ID: 1
       KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
-      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:29092,PLAINTEXT_HOST://localhost:9092
-      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:29092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT
       KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
 
   zookeeper:
@@ -31,11 +27,14 @@ services:
       ZOOKEEPER_CLIENT_PORT: 2181
 
   backend:
-    build: .
-    command: python app.py
+    build:
+      context: ../..
+      dockerfile: infra/docker/Dockerfile
+    command: python pesaguard_backend_pipeline/app.py
     environment:
-      DATABASE_URL: postgresql://pesaguard:pesaguard@postgres:5432/pesaguard
-      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      DATABASE_URL: postgresql://pesaguard:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set}@postgres:5432/pesaguard
+      KAFKA_BOOTSTRAP_SERVERS: kafka:29092
+      JWT_SECRET_KEY: ${JWT_SECRET_KEY:?JWT_SECRET_KEY must be set}
     ports:
       - "5000:5000"
     depends_on:
@@ -43,25 +42,15 @@ services:
       - kafka
 
   dashboard:
-    build: .
-      command: python -m pesaguard_backend_pipeline.canonical_app
+    build:
+      context: ../..
+      dockerfile: infra/docker/Dockerfile
+    command: python -m pesaguard_backend_pipeline.canonical_app
     environment:
-      DATABASE_URL: postgresql://pesaguard:pesaguard@postgres:5432/pesaguard
-    ports:
-      - "5001:5001"
+      DATABASE_URL: postgresql://pesaguard:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set}@postgres:5432/pesaguard
+      JWT_SECRET_KEY: ${JWT_SECRET_KEY:?JWT_SECRET_KEY must be set}
     depends_on:
       - postgres
-
-  frontend:
-    build:
-      context: ../frontend
-      dockerfile: Dockerfile
-    ports:
-      - "3000:80"
-    environment:
-      NEXT_PUBLIC_API_URL: http://localhost:5001
-    depends_on:
-      - dashboard
 
 volumes:
   pgdata:

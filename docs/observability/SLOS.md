@@ -1,4 +1,4 @@
-# Slos
+# PesaGuard Service-Level Objectives
 
 > Design and operating reference for **Observability / Slos**.
 
@@ -9,6 +9,19 @@ This document defines the role of **Slos** within PesaGuard. It provides a durab
 ## Current position
 
 PesaGuard currently runs a Flask and SQLAlchemy backend with PostgreSQL as the production store, Redis and RQ for asynchronous work, Kafka for event transport, and Alembic for schema migration. M-Pesa/Daraja is the active payment scope. Capabilities described here must be marked as implemented, in progress, or planned rather than implied.
+
+## Measurable pilot targets
+
+| SLI | Target | Window | Evidence | Owner/runbook |
+|---|---:|---|---|---|
+| Webhook HTTP availability | >= 99.9% | 30 days | request success/error metrics | API on-call / `docs/runbooks/WEBHOOK_FAILURE.md` |
+| Webhook acknowledgement latency | p95 <= 500 ms | 1 hour | request latency metric | API on-call / `docs/runbooks/HIGH_LATENCY.md` |
+| Durable acceptance | >= 99.99% | 30 days | processed transaction state | Reconciliation on-call |
+| Reconciliation completion | 99% <= 5 minutes | 1 hour | processing and outbox gauges | Reconciliation on-call / `docs/runbooks/RECONCILIATION_FAILURE.md` |
+| Backup freshness | <= 26 hours | continuous | `pesaguard_backup_age_seconds` | Database on-call / `docs/database/BACKUPS.md` |
+| Restore drill integrity | 100% sentinel checks | quarterly | isolated restore result | Database on-call / `docs/database/RESTORE_PROCEDURES.md` |
+
+An SLO breach records the affected window and tenant scope and consumes the corresponding error budget. These pilot targets must be re-baselined after 30 days of production telemetry.
 
 ## Design principles
 

@@ -19,6 +19,7 @@ from sqlalchemy import (
     Index,
     Integer,
     JSON,
+    Numeric,
     String,
     Text,
     UniqueConstraint,
@@ -44,7 +45,7 @@ class Transaction(Base):
     trans_id = Column(String, nullable=False)
     tenant_id = Column(String, nullable=False, default="default", server_default="default")
     provider_account_id = Column(String, nullable=False, default="legacy-default", server_default="legacy-default")
-    trans_amount = Column(Float, nullable=False)
+    trans_amount = Column(Numeric(18, 2), nullable=False)
     msisdn = Column(String, nullable=False)
     business_short_code = Column(String, nullable=False)
     trans_time = Column(String, nullable=False)  # Raw string timestamp format from Daraja
@@ -79,6 +80,58 @@ class ProcessedTransaction(Base):
     source_ip = Column(String, nullable=True)
     signature_verified = Column(Boolean, default=False)
     error_reason = Column(String, nullable=True)
+    reconciliation_status = Column(String, nullable=False, default="pending", server_default="pending")
+    reconciliation_attempts = Column(Integer, nullable=False, default=0, server_default="0")
+    reconciliation_started_at = Column(DateTime(timezone=True), nullable=True)
+    reconciliation_completed_at = Column(DateTime(timezone=True), nullable=True)
+    reconciliation_error = Column(Text, nullable=True)
+
+
+class TransactionOutbox(Base):
+    """Durable downstream publication intent for an accepted transaction."""
+
+    __tablename__ = "transaction_outbox"
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "event_key", name="uq_transaction_outbox_tenant_event"),
+        Index("ix_transaction_outbox_pending", "status", "available_at", "created_at"),
+        Index("ix_transaction_outbox_tenant_created", "tenant_id", "created_at"),
+    )
+
+    id = Column(String, primary_key=True)
+    tenant_id = Column(String, nullable=False, default="default", server_default="default")
+    event_key = Column(String, nullable=False)
+    topic = Column(String, nullable=False)
+    payload = Column(JSON, nullable=False)
+    status = Column(String, nullable=False, default="pending", server_default="pending")
+    attempts = Column(Integer, nullable=False, default=0, server_default="0")
+    available_at = Column(DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc))
+    locked_until = Column(DateTime(timezone=True), nullable=True)
+    last_error = Column(Text, nullable=True)
+    created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), nullable=False)
+    published_at = Column(DateTime(timezone=True), nullable=True)
+
+
+class ReconciliationOutbox(Base):
+    """Durable publication intent for matched/discrepancy outcomes."""
+
+    __tablename__ = "reconciliation_outbox"
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "event_key", name="uq_reconciliation_outbox_tenant_event"),
+        Index("ix_reconciliation_outbox_pending", "status", "available_at", "created_at"),
+    )
+
+    id = Column(String, primary_key=True)
+    tenant_id = Column(String, nullable=False, default="default", server_default="default")
+    event_key = Column(String, nullable=False)
+    topic = Column(String, nullable=False)
+    payload = Column(JSON, nullable=False)
+    status = Column(String, nullable=False, default="pending", server_default="pending")
+    attempts = Column(Integer, nullable=False, default=0, server_default="0")
+    available_at = Column(DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc))
+    locked_until = Column(DateTime(timezone=True), nullable=True)
+    last_error = Column(Text, nullable=True)
+    created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), nullable=False)
+    published_at = Column(DateTime(timezone=True), nullable=True)
 
 
 class Discrepancy(Base):
@@ -122,7 +175,7 @@ class InternalRecord(Base):
 
     internal_ref = Column(String, primary_key=True)
     tenant_id = Column(String, nullable=False, default="default", server_default="default")
-    amount = Column(Float, nullable=False)
+    amount = Column(Numeric(18, 2), nullable=False)
     phone_number = Column(String, nullable=False)
     status = Column(String, nullable=False)
     synced_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), nullable=False)
@@ -255,6 +308,12 @@ class DeadLetter(Base):
     attempts = Column(Integer, default=0)
     processed = Column(Boolean, default=False)
     processed_at = Column(DateTime(timezone=True), nullable=True)
+    replay_status = Column(String, nullable=False, default="idle", server_default="idle")
+    replayed_by = Column(String, nullable=True)
+    replayed_at = Column(DateTime(timezone=True), nullable=True)
+    replay_reason = Column(Text, nullable=True)
+    provider_account_id = Column(String, nullable=True)
+    event_key = Column(String, nullable=True, index=True)
     created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), nullable=False)
     received_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), nullable=False)
 
@@ -542,9 +601,12 @@ class MFAChallenge(Base):
 
     id = Column(String, primary_key=True)
     user_id = Column(String, nullable=False)
-    code = Column(String, nullable=False)
+    tenant_id = Column(String, nullable=False)
+    code_hash = Column(String(128), nullable=False)
     status = Column(String, nullable=False, default="pending")
     created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), nullable=False)
+    expires_at = Column(DateTime(timezone=True), nullable=False)
+    attempts = Column(Integer, nullable=False, default=0)
 
 
 class PasswordlessChallenge(Base):
@@ -554,6 +616,9 @@ class PasswordlessChallenge(Base):
 
     id = Column(String, primary_key=True)
     user_id = Column(String, nullable=False)
-    token = Column(String, nullable=False)
+    tenant_id = Column(String, nullable=False)
+    token_hash = Column(String(128), nullable=False)
     status = Column(String, nullable=False, default="pending")
     created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), nullable=False)
+    expires_at = Column(DateTime(timezone=True), nullable=False)
+    attempts = Column(Integer, nullable=False, default=0)

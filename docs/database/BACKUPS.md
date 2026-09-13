@@ -67,6 +67,8 @@ At minimum, validate syntax and imports, focused unit behavior, cross-tenant iso
 
 ## Open work
 
-- Replace this design baseline with implementation-specific diagrams, schemas, examples, and measured SLOs as the capability matures.
-- Link the final implementation, migration revision, tests, dashboards, and runbook from this document.
-- Review this document whenever the public contract, ownership boundary, or recovery behavior changes.
+- Canonical implementation: `pesaguard_backend_pipeline/backup_postgres.py`.
+- Set `PESAGUARD_BACKUP_ENCRYPT_COMMAND` and `PESAGUARD_BACKUP_DECRYPT_COMMAND` in production; plaintext backups are rejected when `PESAGUARD_ENVIRONMENT=production`.
+- Set `PESAGUARD_BACKUP_UPLOAD_COMMAND` to a deployment-managed command containing `{backup}` for verified off-site delivery.
+- Every artifact has a `.manifest.json` sidecar containing byte length, creation time, and SHA-256. `--test` verifies the full stream.
+- Keep database credentials in `/etc/pesaguard/backup.env`, never in the systemd unit.

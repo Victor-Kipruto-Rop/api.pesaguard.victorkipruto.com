@@ -67,6 +67,7 @@ At minimum, validate syntax and imports, focused unit behavior, cross-tenant iso
 
 ## Open work
 
-- Replace this design baseline with implementation-specific diagrams, schemas, examples, and measured SLOs as the capability matures.
-- Link the final implementation, migration revision, tests, dashboards, and runbook from this document.
-- Review this document whenever the public contract, ownership boundary, or recovery behavior changes.
+- Restore drills use `pesaguard_backend_pipeline/operations/run_restore_drill.py` and an isolated target database.
+- Example: `python pesaguard_backend_pipeline/operations/run_restore_drill.py BACKUP --target-database-url postgresql://.../pesaguard_restore --sentinel-sql "SELECT count(*) FROM transactions"`.
+- The drill writes `restore_drill_result.json` and fails unless restore and sentinel verification both succeed.
+- Pilot targets are RPO <= 24 hours and RTO <= 4 hours; record elapsed restore time and sentinel output with each quarterly drill.

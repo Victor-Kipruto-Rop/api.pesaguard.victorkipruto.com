@@ -6,6 +6,9 @@ This document describes the daily backup process, offsite storage, and restore p
 ## Backup Policy
 - Frequency: daily backup of Postgres data using `pg_dump`.
 - Retention: keep daily backups for 30 days and weekly archive snapshots for 6 months.
+- Encryption: encrypt artifacts with an externally managed key before off-site upload using the configured backup encryption command boundary.
+- Evidence: each artifact has a SHA-256 manifest and must pass full-stream integrity verification before being considered fresh.
+- Recovery targets: pilot RPO <= 24 hours and RTO <= 4 hours, verified by the quarterly isolated restore drill.
 - Storage: backup files should be copied off the primary host to separate object storage or backup storage.
 - Recovery target: restore from the most recent backup within the retention window.
 
