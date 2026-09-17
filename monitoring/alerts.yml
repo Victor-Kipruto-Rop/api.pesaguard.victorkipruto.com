@@ -50,3 +50,13 @@ groups:
         annotations:
           summary: PesaGuard database backup is stale
           description: The newest verified backup is older than 26 hours; inspect backup job and off-site delivery.
+
+      - alert: PesaGuardBackupFailed
+        expr: pesaguard_backup_last_success == 0
+        for: 15m
+        labels:
+          severity: critical
+          service: backup
+        annotations:
+          summary: PesaGuard backup is not healthy
+          description: The backup status marker does not report a successful backup; inspect encryption, upload, retention, and database connectivity.

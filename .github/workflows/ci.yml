@@ -71,7 +71,8 @@ jobs:
           REDIS_URL: redis://localhost:6379/0
           DARAJA_SHARED_SECRET: test_ci_secret_key_12345
           PESAGUARD_ALLOW_UNRESTRICTED_WEBHOOK_SOURCE: 1
-          JWT_SECRET_KEY: test_ci_jwt_secret_key_12345
+          # Application startup rejects JWT secrets shorter than 32 bytes.
+          JWT_SECRET_KEY: test_ci_jwt_secret_key_12345_min32bytes
         run: |
           pytest -v --tb=short --durations=10
 

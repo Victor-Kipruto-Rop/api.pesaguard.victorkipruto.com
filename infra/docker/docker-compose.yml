@@ -7,6 +7,16 @@ x-residency-env: &residency-env
   BACKUP_REGION: ${BACKUP_REGION:-ke-1}
   LOG_REGION: ${LOG_REGION:-ke-1}
 
+x-observability-env: &observability-env
+  OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-http://otel_collector:4317}
+  OTEL_SERVICE_NAME: ${OTEL_SERVICE_NAME:-pesaguard}
+  PESAGUARD_SHARED_METRICS: ${PESAGUARD_SHARED_METRICS:-1}
+  PROMETHEUS_MULTIPROC_DIR: /tmp/pesaguard-prometheus
+  KAFKA_LAG_TOPICS: ${KAFKA_LAG_TOPICS:-mpesa.transactions.raw,discrepancies,notification.events}
+  KAFKA_LAG_GROUPS: ${KAFKA_LAG_GROUPS:-reconciliation,communications}
+  PESAGUARD_ALERTMANAGER_WEBHOOK_SECRET: ${PESAGUARD_ALERTMANAGER_WEBHOOK_SECRET:-}
+  PYTHONPATH: /app:/app/pesaguard_backend_pipeline
+
 services:
   prometheus:
     image: prom/prometheus:latest
@@ -14,6 +24,19 @@ services:
       - "9090:9090"
     volumes:
       - ../../monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ../../monitoring/alerts.yml:/etc/prometheus/alerts.yml:ro
+    depends_on:
+      - alertmanager
+
+  alertmanager:
+    image: prom/alertmanager:latest
+    ports:
+      - "9093:9093"
+    volumes:
+      - ../../monitoring/alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
+    command: ["--config.file=/etc/alertmanager/alertmanager.yml"]
+    depends_on:
+      - webhook_receiver
 
   grafana:
     image: grafana/grafana-oss:latest
@@ -57,6 +80,14 @@ services:
 
   postgres:
     image: postgres:16
+    command:
+      - postgres
+      - -c
+      - archive_mode=on
+      - -c
+      - archive_timeout=60s
+      - -c
+      - archive_command=${POSTGRES_ARCHIVE_COMMAND:-test ! -f /var/lib/postgresql/wal_archive/%f && cp %p /var/lib/postgresql/wal_archive/%f}
     environment:
       <<: *residency-env
       POSTGRES_USER: pesaguard
@@ -66,6 +97,7 @@ services:
       - "5433:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
+      - wal_archive:/var/lib/postgresql/wal_archive
 
   redis:
     image: redis:7
@@ -74,17 +106,19 @@ services:
 
   webhook_receiver:
     build:
-      context: ..
-      dockerfile: docker/Dockerfile
+      context: ../..
+      dockerfile: infra/docker/Dockerfile
     command: ["python", "pesaguard_backend_pipeline/app.py"]
     ports:
       - "5000:5000"
     env_file:
       - ../.env
     environment:
-      <<: *residency-env
+      <<: [*residency-env, *observability-env]
       DATABASE_URL: ${DATABASE_URL_DOCKER:?DATABASE_URL_DOCKER must be set}
-      KAFKA_BOOTSTRAP_SERVERS: ${KAFKA_BOOTSTRAP_SERVERS_DOCKER:-kafka:9092}
+      PESAGUARD_API_URL: ${PESAGUARD_API_URL:-https://api.pesaguard.victorkipruto.com}
+      KAFKA_BOOTSTRAP_SERVERS: ${KAFKA_BOOTSTRAP_SERVERS_DOCKER:-kafka:29092}
+      PESAGUARD_BIND_HOST: 0.0.0.0
       JWT_SECRET_KEY: ${JWT_SECRET_KEY:?JWT_SECRET_KEY must be set}
       SENTRY_DSN: ${SENTRY_DSN:-}
       SENTRY_ENVIRONMENT: ${SENTRY_ENVIRONMENT:-development}
@@ -97,15 +131,15 @@ services:
 
   reconciliation_job:
     build:
-      context: ..
-      dockerfile: docker/Dockerfile
+      context: ../..
+      dockerfile: infra/docker/Dockerfile
     command: ["python", "pesaguard_backend_pipeline/reconciliation_job.py"]
     env_file:
       - ../.env
     environment:
-      <<: *residency-env
+      <<: [*residency-env, *observability-env]
       DATABASE_URL: ${DATABASE_URL_DOCKER:-postgresql://pesaguard:pesaguard@postgres:5432/pesaguard}
-      KAFKA_BOOTSTRAP_SERVERS: ${KAFKA_BOOTSTRAP_SERVERS_DOCKER:-kafka:9092}
+      KAFKA_BOOTSTRAP_SERVERS: ${KAFKA_BOOTSTRAP_SERVERS_DOCKER:-kafka:29092}
       SENTRY_DSN: ${SENTRY_DSN:-}
       SENTRY_ENVIRONMENT: ${SENTRY_ENVIRONMENT:-development}
       SENTRY_RELEASE: ${SENTRY_RELEASE:-}
@@ -118,16 +152,17 @@ services:
 
   dashboard_api:
     build:
-      context: ..
-      dockerfile: docker/Dockerfile
+      context: ../..
+      dockerfile: infra/docker/Dockerfile
     command: ["python", "-m", "pesaguard_backend_pipeline.canonical_app"]
     ports:
       - "5001:5001"
     env_file:
       - ../.env
     environment:
-      <<: *residency-env
+      <<: [*residency-env, *observability-env]
       DATABASE_URL: ${DATABASE_URL_DOCKER:-postgresql://pesaguard:pesaguard@postgres:5432/pesaguard}
+      PESAGUARD_API_URL: ${PESAGUARD_API_URL:-https://api.pesaguard.victorkipruto.com}
       SENTRY_DSN: ${SENTRY_DSN:-}
       SENTRY_ENVIRONMENT: ${SENTRY_ENVIRONMENT:-development}
       SENTRY_RELEASE: ${SENTRY_RELEASE:-}
@@ -139,15 +174,15 @@ services:
 
   rq_worker:
     build:
-      context: ..
-      dockerfile: docker/Dockerfile
+      context: ../..
+      dockerfile: infra/docker/Dockerfile
     command: ["/bin/sh", "pesaguard_backend_pipeline/worker_entrypoint.sh"]
     env_file:
       - ../.env
     environment:
-      <<: *residency-env
+      <<: [*residency-env, *observability-env]
       DATABASE_URL: ${DATABASE_URL_DOCKER:-postgresql://pesaguard:pesaguard@postgres:5432/pesaguard}
-      KAFKA_BOOTSTRAP_SERVERS: ${KAFKA_BOOTSTRAP_SERVERS_DOCKER:-kafka:9092}
+      KAFKA_BOOTSTRAP_SERVERS: ${KAFKA_BOOTSTRAP_SERVERS_DOCKER:-kafka:29092}
       REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
       RQ_QUEUE_NAME: ${RQ_QUEUE_NAME:-transaction_events}
       SENTRY_DSN: ${SENTRY_DSN:-}
@@ -163,15 +198,15 @@ services:
 
   communications_worker:
     build:
-      context: ..
-      dockerfile: docker/Dockerfile.worker
+      context: ../..
+      dockerfile: infra/docker/Dockerfile.worker
     command: ["python", "-m", "pesaguard_backend_pipeline.communications.worker"]
     env_file:
       - ../.env
     environment:
-      <<: *residency-env
+      <<: [*residency-env, *observability-env]
       DATABASE_URL: ${DATABASE_URL_DOCKER:-postgresql://pesaguard:pesaguard@postgres:5432/pesaguard}
-      KAFKA_BOOTSTRAP_SERVERS: ${KAFKA_BOOTSTRAP_SERVERS_DOCKER:-kafka:9092}
+      KAFKA_BOOTSTRAP_SERVERS: ${KAFKA_BOOTSTRAP_SERVERS_DOCKER:-kafka:29092}
       PESAGUARD_NOTIFICATION_TOPIC: ${PESAGUARD_NOTIFICATION_TOPIC:-notification.events}
       SENTRY_DSN: ${SENTRY_DSN:-}
       SENTRY_ENVIRONMENT: ${SENTRY_ENVIRONMENT:-development}
@@ -185,3 +220,4 @@ services:
 
 volumes:
   pgdata:
+  wal_archive:

@@ -41,7 +41,7 @@ psql -c "\\d transactions" | grep uq_transaction
 # Output: uq_transaction_trans_id UNIQUE CONSTRAINT
 
 # 3. Test: Send same webhook twice
-curl -X POST http://localhost:5000/webhook/mpesa/confirmation \
+curl -X POST https://api.pesaguard.victorkipruto.com/webhook/mpesa/confirmation \
   -H "Content-Type: application/json" \
   -d '{"TransID": "test123", "TransAmount": 100, "MSISDN": "254712345678", ...}'
 
@@ -98,7 +98,7 @@ export REDIS_URL="redis://localhost:6379/0"
 ### Verification
 ```bash
 # 1. Measure response time
-time curl -X POST http://localhost:5000/webhook/mpesa/confirmation \
+time curl -X POST https://api.pesaguard.victorkipruto.com/webhook/mpesa/confirmation \
   -H "Content-Type: application/json" \
   -d '{...}'
 # Should be < 50ms
@@ -145,7 +145,7 @@ export DARAJA_CONSUMER_SECRET="xxxxx"
 tail /var/log/pesaguard/app.log | grep "signature\|source\|rate"
 
 # 3. Test: Send invalid signature
-curl -X POST http://localhost:5000/webhook/mpesa/confirmation \
+curl -X POST https://api.pesaguard.victorkipruto.com/webhook/mpesa/confirmation \
   -H "X-Daraja-Signature: invalid" \
   -d '...'
 # Should return 403 Forbidden
@@ -288,7 +288,7 @@ livenessProbe:
 
 # 3. Nginx upstream health check
 upstream pesaguard {
-  server localhost:5000;
+   server api.pesaguard.victorkipruto.com;
   check interval=3000 rise=2 fall=5 timeout=1000 type=http;
   check_http_send "GET /health HTTP/1.0\\r\\n\\r\\n";
   check_http_expect_alive http_2xx;
@@ -298,7 +298,7 @@ upstream pesaguard {
 ### Verification
 ```bash
 # Test health endpoint
-curl http://localhost:5000/health
+curl https://api.pesaguard.victorkipruto.com/health
 
 # Output (ok):
 {
@@ -325,7 +325,7 @@ curl http://localhost:5000/health
 }
 
 # Check HTTP code
-curl -o /dev/null -w "%{http_code}" http://localhost:5000/health
+curl -o /dev/null -w "%{http_code}" https://api.pesaguard.victorkipruto.com/health
 # 200 if ok, 503 if degraded/failed
 ```
 
@@ -374,12 +374,12 @@ curl -o /dev/null -w "%{http_code}" http://localhost:5000/health
 tail -f /var/log/pesaguard/app.log | jq 'select(.correlation_id == "a1b2c3d4")'
 
 # 3. Client can request correlation ID from response
-curl -i http://localhost:5000/webhook/mpesa/confirmation
+curl -i https://api.pesaguard.victorkipruto.com/webhook/mpesa/confirmation
 # Headers include: X-Correlation-ID: a1b2c3d4
 
 # 4. Client can pass correlation ID for tracing
 curl -H "X-Correlation-ID: my-request-123" \
-  http://localhost:5000/webhook/mpesa/confirmation
+   https://api.pesaguard.victorkipruto.com/webhook/mpesa/confirmation
 
 # 5. Configure ELK/Splunk to parse JSON
 # Example Filebeat config:
@@ -393,7 +393,7 @@ processors:
 ### Verification
 ```bash
 # 1. Send test webhook and capture correlation ID
-RESPONSE=$(curl -i http://localhost:5000/webhook/mpesa/confirmation -d '...')
+RESPONSE=$(curl -i https://api.pesaguard.victorkipruto.com/webhook/mpesa/confirmation -d '...')
 CORR_ID=$(echo "$RESPONSE" | grep X-Correlation-ID | cut -d' ' -f2)
 
 # 2. Grep all logs for that correlation ID
@@ -465,7 +465,7 @@ redis-cli INFO stats | grep "total_commands_processed"
 tail -f /var/log/pesaguard/app.log | grep "sync fallback"
 
 # Measure actual response time
-for i in {1..10}; do time curl -o /dev/null -s http://localhost:5000/webhook/...; done
+for i in {1..10}; do time curl -o /dev/null -s https://api.pesaguard.victorkipruto.com/webhook/...; done
 ```
 
 ### Backups not running
@@ -489,7 +489,7 @@ redis-cli PING
 kafka-console-producer --bootstrap-servers localhost:9092 --topic test
 
 # Test health endpoint directly
-curl http://localhost:5000/health | jq '.checks'
+curl https://api.pesaguard.victorkipruto.com/health | jq '.checks'
 ```
 
 ### Duplicate transactions detected

@@ -1,0 +1,371 @@
+/* ==========================================================================
+   Documentation
+   --------------------------------------------------------------------------
+   Powers /documentation and its child guides. The sidebar is the shared
+   navigation contract, so its link labels must stay unique within a page.
+   ========================================================================== */
+
+.docs-shell {
+  display: grid;
+  grid-template-columns: minmax(230px, 270px) minmax(0, 1fr);
+  gap: clamp(30px, 4vw, 68px);
+  align-items: start;
+  padding-block: clamp(38px, 4.5vw, 66px) var(--section-y);
+}
+
+.docs-sidebar {
+  position: sticky;
+  top: calc(var(--header-height) + 24px);
+  display: grid;
+  gap: 22px;
+  align-content: start;
+  padding-right: 22px;
+  border-right: 1px solid var(--line);
+}
+
+.docs-sidebar-head {
+  display: grid;
+  gap: 10px;
+}
+
+.docs-sidebar-head .eyebrow {
+  margin-bottom: 0;
+}
+
+.docs-version {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 11px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--r-full);
+  font: 500 var(--step--1) / 1.4 var(--font-mono);
+  text-transform: uppercase;
+  letter-spacing: var(--tracking-wide);
+  color: var(--text-muted);
+  width: fit-content;
+}
+
+.docs-nav {
+  display: grid;
+  gap: 22px;
+}
+
+.docs-nav-group {
+  display: grid;
+  gap: 2px;
+}
+
+.docs-nav-group-title {
+  margin: 0 0 8px;
+  font: 500 var(--step--1) / 1.5 var(--font-mono);
+  text-transform: uppercase;
+  letter-spacing: var(--tracking-wide);
+  color: var(--text-faint);
+}
+
+.docs-nav a {
+  padding: 8px 0 8px 12px;
+  border-left: 2px solid var(--line);
+  font-size: var(--step-0);
+  color: var(--text-muted);
+  transition: border-color var(--duration) var(--ease-out),
+    color var(--duration) var(--ease-out);
+}
+
+.docs-nav a:hover {
+  color: var(--ink);
+  border-left-color: var(--lime-strong);
+}
+
+.docs-nav a[aria-current="page"] {
+  color: var(--ink);
+  font-weight: 700;
+  border-left-color: var(--lime-strong);
+}
+
+.docs-sidebar-foot {
+  display: grid;
+  gap: 8px;
+  padding-top: 18px;
+  border-top: 1px solid var(--line);
+  font-size: var(--step--1);
+  color: var(--text-faint);
+}
+
+.docs-content {
+  min-width: 0;
+  display: grid;
+  gap: clamp(28px, 3.4vw, 46px);
+}
+
+.docs-header {
+  display: grid;
+  gap: 14px;
+  padding-bottom: clamp(24px, 3vw, 38px);
+  border-bottom: 1px solid var(--line);
+}
+
+.docs-header h1 {
+  font-size: var(--step-5);
+  line-height: 1.08;
+  letter-spacing: var(--tracking-tighter);
+}
+
+.docs-header .lede {
+  max-width: 68ch;
+}
+
+.docs-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px 18px;
+  font: 500 var(--step--1) / 1.6 var(--font-mono);
+  color: var(--text-faint);
+}
+
+.docs-body {
+  display: grid;
+  gap: clamp(26px, 3.2vw, 42px);
+}
+
+.docs-body section {
+  display: grid;
+  gap: 12px;
+  padding-bottom: clamp(22px, 2.8vw, 34px);
+  border-bottom: 1px solid var(--line);
+}
+
+.docs-body section:last-child {
+  border-bottom: 0;
+  padding-bottom: 0;
+}
+
+.docs-body h2 {
+  font-size: var(--step-3);
+  letter-spacing: var(--tracking-tight);
+  scroll-margin-top: calc(var(--header-height) + 26px);
+}
+
+.docs-body h3 {
+  font-size: var(--step-2);
+  letter-spacing: var(--tracking-tight);
+}
+
+.docs-body p {
+  color: var(--text-muted);
+  line-height: var(--leading-loose);
+  max-width: 74ch;
+}
+
+/* Unbulleted list used for short requirement lists. */
+.docs-body ul {
+  display: grid;
+  gap: 11px;
+}
+
+.docs-body ul li {
+  position: relative;
+  padding-left: 18px;
+  color: var(--text-muted);
+  line-height: var(--leading-loose);
+}
+
+.docs-body ul li::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 0.62em;
+  width: 7px;
+  height: 7px;
+  border-radius: 2px;
+  background: var(--lime-strong);
+}
+
+/* Callout used for prerequisites, warnings, and notes. */
+.docs-callout {
+  display: grid;
+  grid-template-columns: 26px minmax(0, 1fr);
+  gap: 14px;
+  padding: 18px 20px;
+  border: 1px solid var(--line);
+  border-left: 3px solid var(--lime-strong);
+  border-radius: var(--r-sm);
+  background: var(--paper-raised);
+}
+
+.docs-callout svg {
+  margin-top: 3px;
+  color: var(--lime-deep);
+}
+
+.docs-callout strong {
+  display: block;
+  font-size: var(--step-0);
+  letter-spacing: -0.01em;
+  margin-bottom: 3px;
+}
+
+.docs-callout p {
+  margin: 0;
+  font-size: var(--step-0);
+  color: var(--text-muted);
+  line-height: 1.7;
+}
+
+.docs-callout-warn {
+  border-left-color: var(--signal-amber);
+}
+
+.docs-callout-warn svg {
+  color: #855a0c;
+}
+
+/* Numbered guide steps. */
+.docs-steps {
+  counter-reset: guide;
+  display: grid;
+  gap: 20px;
+}
+
+.docs-steps li {
+  counter-increment: guide;
+  display: grid;
+  grid-template-columns: 30px minmax(0, 1fr);
+  gap: 14px;
+  align-items: start;
+}
+
+.docs-steps li::before {
+  content: counter(guide);
+  display: grid;
+  place-items: center;
+  width: 26px;
+  height: 26px;
+  border-radius: var(--r-full);
+  background: var(--lime-wash);
+  color: var(--lime-ink);
+  font: 500 var(--step--1) / 1 var(--font-mono);
+}
+
+.docs-steps strong {
+  display: block;
+  margin-bottom: 4px;
+  letter-spacing: var(--tracking-tight);
+}
+
+/* Related-link footer under each guide. */
+.docs-pager {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 14px;
+  padding-top: clamp(22px, 2.6vw, 32px);
+  border-top: 1px solid var(--line);
+}
+
+.docs-pager a {
+  display: grid;
+  gap: 3px;
+  flex: 1 1 240px;
+  padding: 16px 18px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  background: var(--paper-raised);
+  transition: border-color var(--duration) var(--ease-out),
+    box-shadow var(--duration) var(--ease-out);
+}
+
+.docs-pager a:hover {
+  border-color: var(--line-strong);
+  box-shadow: var(--shadow-sm);
+}
+
+.docs-pager span {
+  font: 500 var(--step--1) / 1.5 var(--font-mono);
+  text-transform: uppercase;
+  letter-spacing: var(--tracking-wide);
+  color: var(--text-faint);
+}
+
+.docs-pager strong {
+  font-size: var(--step-1);
+  letter-spacing: var(--tracking-tight);
+}
+
+/* Documentation landing grid. */
+.docs-cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(256px, 1fr));
+  gap: 16px;
+}
+
+.docs-card {
+  display: grid;
+  gap: 10px;
+  align-content: start;
+  padding: clamp(22px, 2.4vw, 30px);
+  background: var(--paper-raised);
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  transition: border-color var(--duration) var(--ease-out),
+    box-shadow var(--duration) var(--ease-out),
+    transform var(--duration) var(--ease-out);
+}
+
+.docs-card:hover {
+  border-color: var(--line-strong);
+  box-shadow: var(--shadow-md);
+  transform: translateY(-3px);
+}
+
+.docs-card-icon {
+  display: grid;
+  place-items: center;
+  width: 36px;
+  height: 36px;
+  border-radius: var(--r-sm);
+  background: var(--lime-wash);
+  color: var(--lime-ink);
+}
+
+.docs-card h3 {
+  font-size: var(--step-1);
+  letter-spacing: var(--tracking-tight);
+}
+
+.docs-card p {
+  margin: 0;
+  font-size: var(--step-0);
+  color: var(--text-muted);
+  line-height: var(--leading-loose);
+}
+
+.docs-card .mono-label {
+  margin-top: 4px;
+}
+
+/* Inline code in prose reads better as a chip. */
+.docs-body code,
+.prose code {
+  padding: 2px 6px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-xs);
+  background: var(--paper-sunken);
+  color: var(--lime-ink);
+  font-size: 0.86em;
+}
+
+@media (max-width: 1023px) {
+  .docs-shell {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .docs-sidebar {
+    position: static;
+    padding-right: 0;
+    border-right: 0;
+    padding-bottom: 22px;
+    border-bottom: 1px solid var(--line);
+  }
+}

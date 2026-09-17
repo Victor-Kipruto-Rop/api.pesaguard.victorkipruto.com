@@ -20,5 +20,9 @@ out/
 # Logs
 *.log
 
+# Generated at import time by pesaguard_backend_pipeline/metrics.py (see B10 in
+# docs/operations/PRODUCTION_CERTIFICATION.md). Never commit this artifact.
+pesaguard_backend_pipeline/__meta__.py
+
 # macOS/Linux
 .DS_Store

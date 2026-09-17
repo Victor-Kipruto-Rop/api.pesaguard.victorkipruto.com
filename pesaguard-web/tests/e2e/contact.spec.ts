@@ -1,0 +1,2 @@
+import { test, expect } from "@playwright/test";
+test("contact form can submit", async ({ page }) => { await page.goto("/contact"); await page.getByLabel("Name").fill("Test operator"); await page.getByLabel("Work email").fill("operator@example.com"); await page.getByLabel("How can we help?").fill("A question about reconciliation"); await page.getByRole("button", { name: /Send/ }).click(); await expect(page.getByText(/message is on its way/)).toBeVisible(); });

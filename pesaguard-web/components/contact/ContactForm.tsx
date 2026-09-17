@@ -1,0 +1,3 @@
+"use client";
+import { useState } from "react";
+export function ContactForm({ kind = "general" }: { kind?: string }) { const [sent, setSent] = useState(false); if (sent) return <div className="success-box"><strong>Thanks. Your message is on its way.</strong><p>A member of the PesaGuard team will follow up shortly.</p></div>; return <form className="contact-form" onSubmit={(event) => { event.preventDefault(); setSent(true); }}><label>Name<input required name="name" autoComplete="name" /></label><label>Work email<input required type="email" name="email" autoComplete="email" /></label><label>How can we help?<textarea required name="message" rows={5} /></label><button className="button button-primary" type="submit">Send {kind} request</button></form>; }

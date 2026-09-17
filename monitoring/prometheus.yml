@@ -5,6 +5,11 @@ global:
 rule_files:
   - alerts.yml
 
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets: ['alertmanager:9093']
+
 scrape_configs:
   - job_name: 'pesaguard-webhook-receiver'
     metrics_path: /metrics

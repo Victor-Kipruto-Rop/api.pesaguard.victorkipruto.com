@@ -1,0 +1,2 @@
+import { DocsLayout } from "@/components/documentation/DocsLayout";
+export function DocsPage({ title, intro }: { title: string; intro: string }) { return <DocsLayout title={title}><p>{intro}</p><h2>Overview</h2><p>Use this guide to make payment operations predictable, observable, and easy to investigate. Examples are intentionally small so they can be adapted to your environment.</p><div className="feature-card" style={{marginTop:32}}><p className="eyebrow">Request example</p><code>Authorization: Bearer $PESAGUARD_API_KEY</code></div></DocsLayout>; }

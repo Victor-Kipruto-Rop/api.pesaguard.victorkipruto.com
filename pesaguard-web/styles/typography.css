@@ -1,0 +1,189 @@
+/* ==========================================================================
+   Typography refinements
+   --------------------------------------------------------------------------
+   Loaded after globals.css. Adds font features, optical corrections, and
+   rhythm rules that are easier to reason about separately from the layout
+   system. Keeps Manrope for prose/UI and DM Mono for data, codes, and labels.
+   ========================================================================== */
+
+body {
+  font-feature-settings: "kern" 1, "liga" 1, "calt" 1;
+}
+
+/* Tabular figures everywhere numbers must align column-to-column. */
+.data-table td,
+.metric-value,
+.mono-label,
+.spec-list dd,
+code,
+pre {
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: "tnum" 1;
+}
+
+.metric-value {
+  font-variant-numeric: tabular-nums;
+}
+
+h1,
+h2,
+h3,
+.display-1,
+.display-2,
+.display-3,
+.display-4 {
+  font-optical-sizing: auto;
+}
+
+/* Balance short headlines, avoid orphan-heavy paragraphs where supported. */
+h1,
+h2,
+h3 {
+  text-wrap: balance;
+}
+
+.lede,
+.large-copy,
+.card-body,
+.accordion-panel {
+  text-wrap: pretty;
+}
+
+/* All-caps labels need optical tracking, not tighter tracking. */
+.badge,
+.eyebrow,
+.mono-label,
+.data-table thead th,
+.spec-list dt,
+.mega-title,
+.footer-column h3,
+.mobile-group-title,
+.panel-top {
+  text-transform: uppercase;
+  text-wrap: nowrap;
+}
+
+.eyebrow,
+.mono-label {
+  font-weight: 500;
+}
+
+/* Long identifiers, URLs, and provider references must never break layout. */
+code,
+kbd,
+.mono,
+.identifier {
+  word-break: break-word;
+  overflow-wrap: anywhere;
+}
+
+/* Inline links inside prose stay readable without losing affordance. */
+.prose a,
+.rich-text a {
+  color: var(--lime-ink);
+  text-decoration: underline;
+  text-decoration-thickness: 1px;
+  text-underline-offset: 3px;
+}
+
+.prose a:hover,
+.rich-text a:hover {
+  color: var(--forest);
+  text-decoration-thickness: 2px;
+}
+
+.prose h2,
+.rich-text h2 {
+  margin: 2.4rem 0 0.9rem;
+  font-size: var(--step-3);
+}
+
+.prose h3,
+.rich-text h3 {
+  margin: 1.9rem 0 0.7rem;
+  font-size: var(--step-2);
+}
+
+.prose p,
+.rich-text p {
+  color: var(--text-muted);
+  line-height: var(--leading-loose);
+  max-width: 74ch;
+}
+
+.prose ul,
+.prose ol,
+.rich-text ul,
+.rich-text ol {
+  display: grid;
+  gap: 12px;
+  margin: 1.2rem 0;
+  padding-left: 0;
+}
+
+.prose ul li,
+.rich-text ul li {
+  position: relative;
+  padding-left: 18px;
+  color: var(--text-muted);
+  line-height: var(--leading-loose);
+}
+
+.prose ul li::before,
+.rich-text ul li::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 0.62em;
+  width: 7px;
+  height: 7px;
+  border-radius: 2px;
+  background: var(--lime-strong);
+}
+
+.prose ol,
+.rich-text ol {
+  counter-reset: legal;
+}
+
+.prose ol li,
+.rich-text ol li {
+  counter-increment: legal;
+  position: relative;
+  padding-left: 30px;
+  color: var(--text-muted);
+  line-height: var(--leading-loose);
+}
+
+.prose ol li::before,
+.rich-text ol li::before {
+  content: counter(legal) ".";
+  position: absolute;
+  left: 0;
+  font: 500 var(--step--1) / 2 var(--font-mono);
+  color: var(--lime-deep);
+}
+
+.prose h2:first-child,
+.prose h3:first-child,
+.rich-text h2:first-child,
+.rich-text h3:first-child {
+  margin-top: 0;
+}
+
+/* Definition-style lists used on legal and security pages. */
+.legal-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px 26px;
+  padding: 16px 0;
+  border-block: 1px solid var(--line);
+  margin-bottom: 34px;
+  font: 500 var(--step--1) / 1.6 var(--font-mono);
+  color: var(--text-faint);
+}
+
+.legal-meta strong {
+  color: var(--text);
+  font-weight: 500;
+}

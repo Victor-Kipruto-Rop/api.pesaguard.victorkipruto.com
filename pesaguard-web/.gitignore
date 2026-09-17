@@ -1,0 +1,7 @@
+node_modules
+.next
+out
+.env*
+!.env.example
+playwright-report
+test-results

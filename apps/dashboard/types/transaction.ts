@@ -1,0 +1,2 @@
+export type TransactionStatus = "completed" | "pending" | "failed" | "flagged" | "duplicate" | "reversed" | "refunded";
+export type Transaction = { id: string; timestamp: string; channel: "mpesa" | "airtel-money" | "bank" | "pos"; amount: string; currency: string; status: TransactionStatus; risk: "low" | "medium" | "high" | "critical"; reconciliation: "matched" | "unmatched" | "mismatched" | "pending" };

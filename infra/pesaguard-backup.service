@@ -10,6 +10,7 @@ Group=postgres
 EnvironmentFile=-/etc/pesaguard/backup.env
 Environment="PESAGUARD_BACKUP_DIR=/var/backups/pesaguard"
 Environment="PESAGUARD_BACKUP_RETENTION_DAYS=30"
+Environment="PESAGUARD_BACKUP_STATUS_FILE=/var/backups/pesaguard/last_status.json"
 Environment="PESAGUARD_BACKUP_ENCRYPT_COMMAND_REQUIRED=true"
 Environment="LOG_LEVEL=INFO"
 ExecStart=/usr/bin/python3 /opt/pesaguard/pesaguard_backend_pipeline/backup_postgres.py --backup
