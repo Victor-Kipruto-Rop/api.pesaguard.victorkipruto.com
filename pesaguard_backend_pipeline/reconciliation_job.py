@@ -32,16 +32,18 @@ except ImportError:
     KafkaProducer = None  # type: ignore[assignment]
     HAS_KAFKA = False
 
-from action_audit import ActionAuditEntry
+from action_audit import ActionAuditRecord, persist_audit_event
 from anomaly_rules import check_for_anomalies
 from base_connector import ConnectorRegistry
 from event_store import EventStore, ProcessResult, provider_account_id
+from fraud_risk_engine import assess_transaction, persist_assessment
 from logging_utils import configure_logging
-from models import Base, Discrepancy, ProcessedTransaction, ReconciliationOutbox
-from reconciliation_engine import evaluate_transaction
+from models import Base, Discrepancy, ProcessedTransaction, ReconciliationMatch, ReconciliationOutbox, Transaction
+from reconciliation_engine import ReconciliationEngine
 from tenant_settings import TenantSettingsStore
 from communications.events import discrepancy_notification_event
 from background_tasks import enqueue_notification_event
+from lifecycle import transition_reconciliation
 
 configure_logging()
 logger = logging.getLogger("pesaguard.reconciliation")
@@ -63,10 +65,13 @@ if DB_URL.startswith("sqlite"):
     engine = create_engine(DB_URL, connect_args={"check_same_thread": False})
 else:
     engine = create_engine(DB_URL, pool_pre_ping=True, pool_size=5, max_overflow=10)
+from metrics import instrument_engine_query_timing
+instrument_engine_query_timing(engine)
 engine_for_audit = engine
 AuditSession = sessionmaker(bind=engine, expire_on_commit=False)
 event_store = EventStore(database_url=DB_URL)
 settings_store = TenantSettingsStore()
+reconciliation_engine = ReconciliationEngine(window_seconds=WINDOW_MINUTES * 60)
 
 _RUNNING = True
 
@@ -141,31 +146,71 @@ def _persist_atomically(event: Dict[str, Any], evaluation: Dict[str, Any], trans
             session.rollback()
             return ProcessResult.DUPLICATE
 
+        transition_reconciliation(processed.reconciliation_status or "pending", "processing")
         processed.reconciliation_status = "processing"
         processed.reconciliation_attempts = (processed.reconciliation_attempts or 0) + 1
         processed.reconciliation_started_at = datetime.now(timezone.utc)
         processed.reconciliation_error = None
         result_payload = json.loads(json.dumps(evaluation, ensure_ascii=False, default=str))
 
-        is_discrepancy = evaluation.get("status") in {"needs_review", "missing_payment"} or bool(evaluation.get("anomalies"))
+        recent_transactions = session.query(Transaction).filter(
+            Transaction.tenant_id == tenant_id,
+        ).order_by(Transaction.created_at.desc()).limit(100).all()
+        risk_history = [
+            {
+                "TransID": item.trans_id,
+                "TransAmount": item.trans_amount,
+                "MSISDN": item.msisdn,
+                "BusinessShortCode": item.business_short_code,
+                "TransTime": item.trans_time,
+            }
+            for item in recent_transactions
+        ]
+        risk_decision = assess_transaction(event, risk_history)
+        persist_assessment(session, tenant_id, trans_id, risk_decision)
+        result_payload["fraud_risk"] = risk_decision.as_dict()
+
+        phase3_status = evaluation.get("phase3_status")
+        is_discrepancy = (
+            phase3_status not in {None, "MATCHED", "DUPLICATE"}
+            if phase3_status
+            else evaluation.get("status") in {"needs_review", "missing_payment"} or bool(evaluation.get("anomalies"))
+        )
+        if risk_decision.risk_level in {"HIGH", "CRITICAL"}:
+            is_discrepancy = True
+            result_payload["anomalies"] = list(result_payload.get("anomalies") or []) + list(risk_decision.reason_codes)
         if is_discrepancy:
             discrepancy_id = f"{tenant_id}:{trans_id}:reconciliation"
             discrepancy = session.get(Discrepancy, discrepancy_id)
             if discrepancy is None:
+                discrepancy_status = evaluation.get("status")
+                if discrepancy_status not in {"needs_review", "reviewed", "resolved", "escalated"}:
+                    discrepancy_status = "needs_review"
                 discrepancy = Discrepancy(
                     id=discrepancy_id,
                     trans_id=trans_id,
                     tenant_id=tenant_id,
                     anomaly_type=evaluation.get("status", "reconciliation_anomaly"),
-                    status=evaluation.get("status", "needs_review"),
+                    status=discrepancy_status,
                     severity=evaluation.get("severity", "warning"),
                     details=json.dumps(result_payload, ensure_ascii=False),
                     detected_at=datetime.now(timezone.utc),
                 )
                 session.add(discrepancy)
 
-        audit_entry = ActionAuditEntry(
-            id=f"audit_{event_key[:48]}",
+        audit_details = {
+            "trans_id": trans_id,
+            "status": evaluation.get("status"),
+            "match": evaluation.get("match"),
+            "anomalies": evaluation.get("anomalies", []),
+        }
+        trace_context = {}
+        try:
+            from logging_utils import get_observability_context
+            trace_context = get_observability_context()
+        except Exception:
+            logger.debug("Could not read trace identifiers for reconciliation audit", exc_info=True)
+        persist_audit_event(session, ActionAuditRecord(
             tenant_id=tenant_id,
             actor="reconciliation_job",
             action="discrepancy_flagged" if is_discrepancy else "matched",
@@ -175,15 +220,27 @@ def _persist_atomically(event: Dict[str, Any], evaluation: Dict[str, Any], trans
             resource_type="transaction",
             resource_id=trans_id,
             idempotency_key=f"reconciliation:{event_key}",
-            details={
-                "trans_id": trans_id,
-                "status": evaluation.get("status"),
-                "match": evaluation.get("match"),
-                "anomalies": evaluation.get("anomalies", []),
-            },
-            created_at=datetime.now(timezone.utc),
-        )
-        session.add(audit_entry)
+            details=audit_details,
+            trace_id=trace_context.get("trace_id") or None,
+            correlation_id=trace_context.get("correlation_id") or None,
+            request_id=trace_context.get("request_id") or None,
+        ))
+        evidence = evaluation.get("evidence") or {}
+        match_timestamp = evidence.get("match_timestamp")
+        if match_timestamp:
+            session.add(ReconciliationMatch(
+                id=f"recon_match_{event_key[:24]}",
+                tenant_id=tenant_id,
+                transaction_id=trans_id,
+                matched_record=evidence.get("matched_record"),
+                matching_rules=evidence.get("matching_rules", []),
+                match_score=evidence.get("match_score", 0),
+                match_timestamp=datetime.fromisoformat(match_timestamp),
+                engine_version=evidence.get("engine_version", "unknown"),
+                status=phase3_status or "EXCEPTION",
+                processing_latency_ms=evaluation.get("processing_latency_ms", 0),
+                created_at=datetime.now(timezone.utc),
+            ))
         result_topic = TOPIC_DISCREPANCIES if is_discrepancy else TOPIC_MATCHED
         session.add(ReconciliationOutbox(
             id=f"recon_outbox_{event_key[:12]}",
@@ -195,6 +252,7 @@ def _persist_atomically(event: Dict[str, Any], evaluation: Dict[str, Any], trans
             created_at=datetime.now(timezone.utc),
             available_at=datetime.now(timezone.utc),
         ))
+        transition_reconciliation(processed.reconciliation_status, "completed")
         processed.reconciliation_status = "completed"
         processed.reconciliation_completed_at = datetime.now(timezone.utc)
         session.commit()
@@ -210,7 +268,12 @@ def _persist_atomically(event: Dict[str, Any], evaluation: Dict[str, Any], trans
 
 def _publish_downstream(evaluation: Dict[str, Any], trans_id: str, producer: Any, tenant_id: str) -> None:
     """Best-effort publish of reconciliation results to downstream Kafka topics."""
-    is_discrepancy = evaluation.get("status") in {"needs_review", "missing_payment"} or bool(evaluation.get("anomalies"))
+    phase3_status = evaluation.get("phase3_status")
+    is_discrepancy = (
+        phase3_status not in {None, "MATCHED", "DUPLICATE"}
+        if phase3_status
+        else evaluation.get("status") in {"needs_review", "missing_payment"} or bool(evaluation.get("anomalies"))
+    )
     topic = TOPIC_DISCREPANCIES if is_discrepancy else TOPIC_MATCHED
     provider_id = provider_account_id(evaluation.get("event", {}))
     event_key = hashlib.sha256(f"{tenant_id}:{provider_id}:{trans_id}".encode("utf-8")).hexdigest()
@@ -325,14 +388,32 @@ def _process_message_unbounded(event: Dict[str, Any], consumer: Any, producer: A
         else:
             internal_records = connector.fetch_recent_records(since_minutes=WINDOW_MINUTES) if connector else []
 
-        tenant_cfg = settings_store.get(tenant_id)
-        evaluation = evaluate_transaction(
+        phase3_result = reconciliation_engine.reconcile(
             event,
             internal_records,
-            seen_trans_ids,
-            window_minutes=WINDOW_MINUTES,
-            tenant_settings=tenant_cfg,
+            seen_transaction_ids=seen_trans_ids,
         )
+        phase3_status = phase3_result["status"]
+        compatibility = {
+            "MATCHED": ("matched", "info"),
+            "UNMATCHED": ("missing_payment", "critical"),
+            "PARTIAL": ("needs_review", "warning"),
+            "MISMATCH": ("needs_review", "warning"),
+            "DUPLICATE": ("duplicate_ignored", "info"),
+            "PENDING": ("pending", "warning"),
+            "EXCEPTION": ("needs_review", "critical"),
+        }
+        legacy_status, severity = compatibility[phase3_status]
+        evaluation = {
+            "trans_id": trans_id,
+            "status": legacy_status,
+            "severity": severity,
+            "phase3_status": phase3_status,
+            "match": {"match_type": phase3_status.lower(), "evidence": phase3_result["evidence"]},
+            "evidence": phase3_result["evidence"],
+            "processing_latency_ms": phase3_result["processing_latency_ms"],
+            "anomalies": list(phase3_result["evidence"].get("matching_rules", [])) if phase3_status != "MATCHED" else [],
+        }
 
         evaluation["tenant_id"] = tenant_id
         evaluation["event"] = event
@@ -374,6 +455,18 @@ def _commit_message(consumer: Any, message: Any) -> None:
         consumer.commit()
 
 
+def _message_traceparent(message: Any) -> Optional[str]:
+    """Extract a W3C traceparent header from a kafka-python message if the producer injected one."""
+    headers = getattr(message, "headers", None) or []
+    for key, value in headers:
+        if str(key).lower() == "traceparent" and value:
+            try:
+                return value.decode("ascii")
+            except Exception:
+                continue
+    return None
+
+
 def process_polled_batch(message_batch: Dict[Any, Any], consumer: Any, producer: Any, connector_registry: Any) -> Dict[str, int]:
     """Process a bounded poll while preserving message order within each partition."""
     processed = 0
@@ -382,6 +475,16 @@ def process_polled_batch(message_batch: Dict[Any, Any], consumer: Any, producer:
         for message in list(messages)[:BATCH_SIZE]:
             if not _RUNNING:
                 break
+            traceparent = _message_traceparent(message)
+            if traceparent:
+                try:
+                    from logging_utils import bind_observability_context
+                    from observability import extract_trace_context
+                    parsed = extract_trace_context({"traceparent": traceparent})
+                    if parsed:
+                        bind_observability_context(trace_id=parsed["trace_id"], span_id=parsed["span_id"], traceparent=traceparent)
+                except Exception:
+                    logger.debug("Could not bind incoming W3C trace context from message headers", exc_info=True)
             if _process_message(message.value, consumer, producer, connector_registry) is not False:
                 _commit_message(consumer, message)
                 processed += 1

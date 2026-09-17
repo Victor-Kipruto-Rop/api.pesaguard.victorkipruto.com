@@ -22,6 +22,39 @@ PRODUCER_SEND_TIMEOUT_SECONDS = int(os.getenv("PESAGUARD_PRODUCER_SEND_TIMEOUT_S
 ENABLE_DLQ_FALLBACK = os.getenv("PESAGUARD_PRODUCER_ENABLE_DLQ_FALLBACK", "1") == "1"
 
 
+def publish_versioned_event(event: Any, *, producer: Any = None) -> Any:
+    """Publish a validated Phase 4 EventEnvelope through the existing Kafka producer."""
+    from event_bus import EventEnvelope
+    from topics import EVENT_TYPE_TOPICS
+
+    if isinstance(event, dict):
+        event = EventEnvelope.from_dict(event)
+    if not isinstance(event, EventEnvelope):
+        raise TypeError("event must be an EventEnvelope or envelope dictionary")
+    from logging_utils import bind_observability_context
+    from observability import trace_span
+    bind_observability_context(
+        correlation_id=event.correlation_id,
+        transaction_id=event.aggregate_id,
+        event_id=event.event_id,
+        tenant_id=event.tenant_id,
+    )
+    topic = EVENT_TYPE_TOPICS[event.event_type]
+    payload = event.to_dict()
+    if producer is not None:
+        key = event.aggregate_id.encode("utf-8")
+        with trace_span("kafka.publish", topic=topic, event_type=event.event_type):
+            from observability import inject_trace_context
+            trace_headers = inject_trace_context({})
+            return producer.send(topic, key=key, value=payload, headers=[
+                ("event_type", event.event_type.encode("utf-8")),
+                ("event_version", str(event.event_version).encode("utf-8")),
+                ("tenant_id", event.tenant_id.encode("utf-8")),
+                ("traceparent", trace_headers["traceparent"].encode("ascii")),
+            ])
+    return publish_transaction_event(topic, payload, correlation_id=event.correlation_id)
+
+
 class CircuitBreakerOpenException(Exception):
     """Raised when the circuit breaker blocks execution due to consecutive downstream failures."""
     pass
@@ -102,18 +135,9 @@ class _ProducerManager:
                     "request_timeout_ms": PRODUCER_SEND_TIMEOUT_SECONDS * 1000,
                     "batch_size": 16384,
                     "linger_ms": 10,
-                    "enable_idempotence": True,
                 }
-                try:
-                    self._producer = KafkaProducer(**producer_kwargs)
-                except TypeError:
-                    # Older kafka-python releases do not accept idempotence.
-                    # Keep the compatible safety settings rather than creating
-                    # and discarding a probe producer.
-                    producer_kwargs.pop("enable_idempotence", None)
-                    producer_kwargs.pop("max_in_flight_requests_per_connection", None)
-                    self._producer = KafkaProducer(**producer_kwargs)
-                logger.info("Kafka producer successfully initialized connecting to %s with compression and idempotency enabled.", KAFKA_BOOTSTRAP_SERVERS)
+                self._producer = KafkaProducer(**producer_kwargs)
+                logger.info("Kafka producer successfully initialized connecting to %s with idempotence-compatible settings.", KAFKA_BOOTSTRAP_SERVERS)
                 return self._producer
             except Exception as exc:
                 logger.exception("Failed to initialize Kafka producer connecting to %s: %s", KAFKA_BOOTSTRAP_SERVERS, exc)
@@ -140,6 +164,10 @@ def _validate_payload_schema(payload: Dict[str, Any]) -> None:
     if not isinstance(payload, dict):
         raise ValueError("Event payload must be a JSON object dictionary.")
     
+    if payload.get("event_id") and payload.get("event_type") and payload.get("event_version"):
+        from event_bus import EventEnvelope
+        EventEnvelope.from_dict(payload)
+        return
     trans_id = payload.get("TransID") or payload.get("trans_id")
     if not trans_id:
         raise ValueError("Missing required transaction identifier ('TransID' or 'trans_id') in event payload.")
@@ -159,7 +187,9 @@ def _fallback_to_dead_letter_queue(topic: str, payload: Dict[str, Any], error_re
         from datetime import datetime, timezone
 
         tenant_id = payload.get("tenant_id") or payload.get("TenantID") or "default"
-        trans_id = payload.get("TransID") or payload.get("trans_id") or "unknown"
+        trans_id = payload.get("TransID") or payload.get("trans_id") or payload.get("aggregate_id") or payload.get("event_id") or "unknown"
+        event_type = payload.get("event_type") or "legacy.event"
+        event_id = payload.get("event_id") or "unknown"
         event_key = hashlib.sha256(f"{tenant_id}:{trans_id}:{topic}:{error_reason[:200]}".encode("utf-8")).hexdigest()
         
         with SessionLocal() as session:
@@ -168,14 +198,14 @@ def _fallback_to_dead_letter_queue(topic: str, payload: Dict[str, Any], error_re
                 tenant_id=tenant_id,
                 reason=f"Kafka Delivery Failure: {error_reason[:200]}",
                 payload=protect_payload(payload),
-                error_detail=f"Target Topic: {topic}",
+                error_detail=f"Target Topic: {topic}; EventType: {event_type}; EventID: {event_id}",
                 attempts=0,
                 processed=False,
                 created_at=datetime.now(timezone.utc),
             )
             session.add(dlq_record)
             session.commit()
-            logger.info("Fallback succeeded: Event for trans_id=%s persisted to DeadLetter DB store.", payload.get("TransID") or payload.get("trans_id"))
+            logger.info("Fallback succeeded: Event for trans_id=%s persisted to DeadLetter DB store.", trans_id)
     except Exception as exc:
         logger.exception("DLQ fallback persistence failed for event topic=%s: %s", topic, exc)
         raise RuntimeError("dead-letter persistence failed") from exc
@@ -212,13 +242,20 @@ def publish_transaction_event(
 
     # Format trace headers
     msg_headers: List[tuple[str, bytes]] = list(headers) if headers else []
+    if not any(str(name).lower() == "traceparent" for name, _ in msg_headers):
+        try:
+            from observability import inject_trace_context
+            carrier = inject_trace_context({})
+            msg_headers.append(("traceparent", carrier["traceparent"].encode("ascii")))
+        except Exception:
+            logger.debug("Could not inject W3C traceparent header for Kafka publish", exc_info=True)
     if correlation_id:
         msg_headers.append(("correlation_id", correlation_id.encode("utf-8")))
     
     tenant_id = str(payload.get("tenant_id") or payload.get("TenantID") or "default")
     msg_headers.append(("tenant_id", tenant_id.encode("utf-8")))
 
-    trans_id = payload.get("TransID") or payload.get("trans_id")
+    trans_id = payload.get("TransID") or payload.get("trans_id") or payload.get("aggregate_id") or payload.get("event_id")
     key = str(trans_id).encode("utf-8") if trans_id else None
 
     try:
@@ -238,7 +275,7 @@ def publish_transaction_event(
     except Exception as exc:
         _circuit_breaker.record_failure()
         logger.exception(
-            "Kafka event publish failed for trans_id=%s topic=%s — resetting producer connection.",
+            "Kafka event publish failed for trans_id=%s topic=%s â€” resetting producer connection.",
             trans_id, topic
         )
         _producer_manager.reset_producer()
@@ -277,7 +314,7 @@ def publish_transaction_batch(
     for payload in payloads:
         try:
             _validate_payload_schema(payload)
-            trans_id = payload.get("TransID") or payload.get("trans_id")
+            trans_id = payload.get("TransID") or payload.get("trans_id") or payload.get("aggregate_id") or payload.get("event_id")
             key = str(trans_id).encode("utf-8") if trans_id else None
             
             headers = [("tenant_id", str(payload.get("tenant_id", "default")).encode("utf-8"))]

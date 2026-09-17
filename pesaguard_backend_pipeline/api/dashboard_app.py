@@ -19,12 +19,12 @@ from typing import Any, Dict, List, Optional
 from flask import Flask, Response, g, has_request_context, jsonify, request, send_file
 from werkzeug.exceptions import BadRequest, HTTPException
 
-from action_audit import ActionAuditEntry, AuditOutboxEntry, Base as AuditBase
+from action_audit import ActionAuditRecord, AuditOutboxEntry, Base as AuditBase, persist_audit_event
 from auth_rbac import AuthenticationUnavailable, AuthRBAC, TENANT_ID_PATTERN, assert_auth_configuration, auth_required, configure_revocation_store, get_current_user, parse_bearer_token, require_auth
 from export_routes import bp as export_bp
 from health import build_health_payload
 from logging_utils import configure_logging, get_correlation_id, set_correlation_id
-from metrics import build_metrics_payload
+from metrics import build_metrics_payload, record_security_event
 from models import Base, DeadLetter, Discrepancy, Transaction, UserAccount
 from provider_management_service import ProviderManagementService
 from rate_limiter import RateLimiter
@@ -60,6 +60,7 @@ def _env_int(name: str, default: int) -> int:
 app = Flask(__name__)
 app.register_blueprint(tenant_org_bp)
 runtime_config = RuntimeConfig.from_env()
+PUBLIC_API_URL = runtime_config.public_api_url
 assert_auth_configuration()
 app.config["MAX_CONTENT_LENGTH"] = runtime_config.api_body_limit
 app.config["PESAGUARD_WEBHOOK_MAX_BODY_BYTES"] = runtime_config.webhook_body_limit
@@ -95,8 +96,15 @@ def _create_engine(database_url: str, **kwargs):
             kwargs["poolclass"] = StaticPool
         else:
             kwargs.setdefault("poolclass", NullPool)
-        return create_engine(database_url, **kwargs)
-    return create_engine(database_url, **kwargs)
+        engine = create_engine(database_url, **kwargs)
+    else:
+        engine = create_engine(database_url, **kwargs)
+    try:
+        from metrics import instrument_engine_query_timing
+        instrument_engine_query_timing(engine)
+    except Exception:
+        pass
+    return engine
 
 
 if DATABASE_URL.startswith("sqlite"):
@@ -125,8 +133,49 @@ else:
     replica_engine = None
 
 def _api_auth_required() -> bool:
-    """Resolve auth requirement dynamically to honor test and deployment env overrides."""
-    return auth_required()
+    """Resolve auth requirement dynamically to honor test and deployment env overrides.
+
+    When the API requires authentication and the current request context does not
+    satisfy it, this function records a security event so auth denials remain
+    observable in the same way as other security decision paths.
+    """
+    required = auth_required()
+    if required and not _current_api_auth_satisfied():
+        try:
+            from metrics import record_security_event
+
+            record_security_event()
+        except Exception:
+            logger.debug("Unable to record dashboard API auth security event", exc_info=True)
+        return False
+    return required
+
+
+def _current_api_auth_satisfied() -> bool:
+    """Return True when the current request context appears to be authenticated.
+
+    This is a lightweight heuristic used only to decide whether to emit a
+    security event when authentication is required. It is intentionally
+    conservative: if we cannot determine auth state, we assume it is not
+    satisfied for security-event purposes.
+    """
+    from flask import has_request_context, request
+
+    if not has_request_context():
+        return False
+    bearer = request.headers.get("Authorization", "")
+    if not bearer.lower().startswith("bearer "):
+        return False
+    token = bearer.split(None, 1)[1] if len(bearer.split(None, 1)) > 1 else ""
+    if not token:
+        return False
+    try:
+        import jwt
+
+        jwt.decode(token, options={"verify_signature": False, "verify_exp": False, "verify_iat": False})
+        return True
+    except Exception:
+        return False
 
 
 SLA_WINDOW_MINUTES = _env_int("PESAGUARD_SLA_WINDOW_MINUTES", 30)
@@ -877,7 +926,7 @@ def enforce_api_security():
     """Enforce payload size checks, strict IP security, distributed rate limiting, and RBAC."""
     if request.method == "OPTIONS":
         allowed_origins = {
-            origin.strip() for origin in os.getenv("PESAGUARD_CORS_ALLOWED_ORIGINS", "").split(",")
+            origin.strip() for origin in os.getenv("PESAGUARD_CORS_ALLOWED_ORIGINS", PUBLIC_API_URL).split(",")
             if origin.strip() and origin.strip() != "*"
         }
         origin = request.headers.get("Origin")
@@ -904,6 +953,7 @@ def enforce_api_security():
 
     client_ip = get_client_ip(request)
     if is_webhook_request and not is_allowed_source(client_ip, request):
+        record_security_event()
         logger.warning("Rejected API request from unauthorized source IP: %s", client_ip)
         return jsonify({"error": "forbidden_source", "message": "Access denied from this source."}), 403
 
@@ -915,14 +965,17 @@ def enforce_api_security():
         try:
             user = AuthRBAC.verify_token(token)
         except AuthenticationUnavailable:
+            record_security_event()
             return jsonify({
                 "error": "authentication_unavailable",
                 "message": "Authentication state is temporarily unavailable.",
             }), 503
     if _api_auth_required():
         if not token:
+            record_security_event()
             return jsonify({"error": "authentication_failed", "message": "Valid bearer authentication is required."}), 401
         if not user:
+            record_security_event()
             return jsonify({"error": "authentication_failed", "message": "Valid bearer authentication is required."}), 401
         g.user = user
     if user:
@@ -930,6 +983,7 @@ def enforce_api_security():
 
     allowed, status = api_rate_limiter.is_allowed(client_identity, request.path)
     if not allowed:
+        record_security_event()
         logger.warning("API rate limit exceeded for identity: %s on path: %s", client_identity, request.path)
         response = jsonify({"error": "rate_limit_exceeded", "message": "Too many requests. Please slow down."})
         response.status_code = 429
@@ -943,7 +997,7 @@ def _inject_security_headers(response: Response) -> Response:
     """Inject robust security and CORS headers into all API responses."""
     allowed_origins = {
         origin.strip()
-        for origin in os.getenv("PESAGUARD_CORS_ALLOWED_ORIGINS", "").split(",")
+        for origin in os.getenv("PESAGUARD_CORS_ALLOWED_ORIGINS", PUBLIC_API_URL).split(",")
         if origin.strip() and origin.strip() != "*"
     }
     origin = request.headers.get("Origin")
@@ -1258,7 +1312,7 @@ def replay_dead_letter(dead_letter_id: str):
         entry = session.query(DeadLetter).filter(
             DeadLetter.id == dead_letter_id,
             DeadLetter.tenant_id == tenant_id,
-        ).first()
+        ).with_for_update().first()
         if entry is None:
             return jsonify({"error": "not_found", "message": "Dead-letter entry not found."}), 404
         if (entry.attempts or 0) >= 3 or entry.replay_status in {"queued", "replaying"}:
@@ -1270,8 +1324,7 @@ def replay_dead_letter(dead_letter_id: str):
         entry.replayed_by = actor_id
         entry.replayed_at = datetime.now(timezone.utc)
         entry.replay_reason = replay_reason
-        session.add(ActionAuditEntry(
-            id=f"audit_dl_replay_{entry.id}_{entry.attempts}",
+        persist_audit_event(session, ActionAuditRecord(
             tenant_id=tenant_id,
             actor=actor_id,
             action="dead_letter_replayed",
@@ -1282,7 +1335,6 @@ def replay_dead_letter(dead_letter_id: str):
             resource_id=entry.id,
             idempotency_key=f"dead-letter-replay:{entry.id}:{entry.attempts}",
             details={"reason": replay_reason, "attempt": entry.attempts},
-            created_at=datetime.now(timezone.utc),
         ))
         session.commit()
         try:
@@ -1566,7 +1618,7 @@ def resolve_discrepancy(discrepancy_id: str):
         discrepancy.resolved_at = datetime.now(timezone.utc)
         discrepancy.resolution_note = payload.get("note", discrepancy.resolution_note)
 
-        session.add(ActionAuditEntry(
+        persist_audit_event(session, ActionAuditRecord(
             tenant_id=discrepancy.tenant_id or "default",
             actor=actor,
             action="resolve_discrepancy",
@@ -2128,5 +2180,5 @@ if __name__ == "__main__":
     logger.info("Starting canonical dashboard API; database schema must be managed by Alembic.")
     port = runtime_config.port
     debug_mode = os.getenv("FLASK_DEBUG", "false").lower() in {"true", "1", "yes"}
-    app.run(host="0.0.0.0", port=port, debug=debug_mode)
+    app.run(host=os.getenv("PESAGUARD_BIND_HOST", "127.0.0.1"), port=port, debug=debug_mode)
 

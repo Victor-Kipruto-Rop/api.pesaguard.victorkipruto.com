@@ -4,7 +4,18 @@ from datetime import datetime, timezone
 
 from sqlalchemy import CheckConstraint, Column, DateTime, ForeignKey, Index, Integer, JSON, String, Text, UniqueConstraint
 
-from pesaguard_backend_pipeline.models import Base
+try:
+    from models import Base as _LocalBase
+except Exception:
+    _LocalBase = None
+
+try:
+    from pesaguard_backend_pipeline.models import Base
+except Exception:
+    Base = _LocalBase
+
+if Base is None:
+    Base = declarative_base()
 
 
 def utc_now() -> datetime:
@@ -15,6 +26,7 @@ class CommunicationNotification(Base):
     __tablename__ = "communication_notifications"
     __table_args__ = (
         UniqueConstraint("tenant_id", "idempotency_key", name="uq_communication_notification_idempotency"),
+        CheckConstraint("tenant_id IS NOT NULL AND tenant_id <> ''", name="ck_communication_notification_tenant_id_nonempty"),
         CheckConstraint("status IN ('created', 'queued', 'processing', 'accepted', 'submitted', 'sent', 'delivered', 'opened', 'clicked', 'bounced', 'complained', 'failed', 'rejected', 'expired', 'cancelled', 'retrying', 'dead_letter')", name="ck_communication_notification_status"),
         CheckConstraint("priority IN ('critical', 'high', 'normal', 'low', 'bulk')", name="ck_communication_notification_priority"),
         Index("ix_communication_notification_tenant_status_created", "tenant_id", "status", "created_at"),
@@ -50,6 +62,7 @@ class CommunicationOutboxEntry(Base):
     __tablename__ = "communication_outbox_entries"
     __table_args__ = (
         UniqueConstraint("notification_id", name="uq_communication_outbox_notification"),
+        CheckConstraint("tenant_id IS NOT NULL AND tenant_id <> ''", name="ck_communication_outbox_entry_tenant_id_nonempty"),
         CheckConstraint("status IN ('pending', 'leased', 'retrying', 'completed', 'dead_letter')", name="ck_communication_outbox_status"),
         CheckConstraint("attempt_count >= 0 AND max_attempts > 0", name="ck_communication_outbox_attempt_counts"),
         Index("ix_communication_outbox_due", "status", "available_at"),
@@ -99,6 +112,7 @@ class CommunicationDeliveryReport(Base):
     __tablename__ = "communication_delivery_reports"
     __table_args__ = (
         UniqueConstraint("provider", "provider_event_id", name="uq_communication_delivery_provider_event"),
+        CheckConstraint("tenant_id IS NOT NULL AND tenant_id <> ''", name="ck_communication_delivery_report_tenant_id_nonempty"),
         Index("ix_communication_delivery_notification_received", "notification_id", "received_at"),
         Index("ix_communication_delivery_tenant_status_received", "tenant_id", "status", "received_at"),
         {"extend_existing": True},
@@ -145,6 +159,7 @@ class CommunicationTemplate(Base):
     __tablename__ = "communication_templates"
     __table_args__ = (
         UniqueConstraint("tenant_id", "slug", "version", name="uq_communication_template_version"),
+        CheckConstraint("tenant_id IS NOT NULL AND tenant_id <> ''", name="ck_communication_template_tenant_id_nonempty"),
         Index("ix_communication_template_tenant_slug", "tenant_id", "slug", "status"),
         {"extend_existing": True},
     )
@@ -166,6 +181,7 @@ class CommunicationPreference(Base):
     __tablename__ = "communication_preferences"
     __table_args__ = (
         UniqueConstraint("tenant_id", "recipient", name="uq_communication_preference_recipient"),
+        CheckConstraint("tenant_id IS NOT NULL AND tenant_id <> ''", name="ck_communication_preference_tenant_id_nonempty"),
         {"extend_existing": True},
     )
 
@@ -184,6 +200,7 @@ class CommunicationConsent(Base):
     __tablename__ = "communication_consents"
     __table_args__ = (
         UniqueConstraint("tenant_id", "recipient", "channel", name="uq_communication_consent"),
+        CheckConstraint("tenant_id IS NOT NULL AND tenant_id <> ''", name="ck_communication_consent_tenant_id_nonempty"),
         {"extend_existing": True},
     )
 
@@ -200,6 +217,7 @@ class CommunicationConsent(Base):
 class CommunicationOtpChallenge(Base):
     __tablename__ = "communication_otp_challenges"
     __table_args__ = (
+        CheckConstraint("tenant_id IS NOT NULL AND tenant_id <> ''", name="ck_communication_otp_challenge_tenant_id_nonempty"),
         Index("ix_communication_otp_recipient_active", "tenant_id", "recipient", "expires_at"),
         {"extend_existing": True},
     )
@@ -221,6 +239,7 @@ class CommunicationOtpChallenge(Base):
 class CommunicationCampaign(Base):
     __tablename__ = "communication_campaigns"
     __table_args__ = (
+        CheckConstraint("tenant_id IS NOT NULL AND tenant_id <> ''", name="ck_communication_campaign_tenant_id_nonempty"),
         CheckConstraint("status IN ('draft', 'queued', 'scheduled', 'running', 'paused', 'completed', 'cancelled')", name="ck_communication_campaign_status"),
         Index("ix_communication_campaign_tenant_schedule", "tenant_id", "status", "scheduled_at"),
         {"extend_existing": True},
@@ -263,6 +282,7 @@ class CommunicationProviderRoute(Base):
     __tablename__ = "communication_provider_routes"
     __table_args__ = (
         UniqueConstraint("tenant_id", "channel", "provider", name="uq_communication_provider_route"),
+        CheckConstraint("tenant_id IS NOT NULL AND tenant_id <> ''", name="ck_communication_provider_route_tenant_id_nonempty"),
         {"extend_existing": True},
     )
 
@@ -310,6 +330,7 @@ class CommunicationSavedFilter(Base):
     __tablename__ = "communication_saved_filters"
     __table_args__ = (
         UniqueConstraint("tenant_id", "name", name="uq_communication_saved_filter_name"),
+        CheckConstraint("tenant_id IS NOT NULL AND tenant_id <> ''", name="ck_communication_saved_filter_tenant_id_nonempty"),
         {"extend_existing": True},
     )
 
@@ -325,6 +346,7 @@ class CommunicationTenantQuota(Base):
     __tablename__ = "communication_tenant_quotas"
     __table_args__ = (
         UniqueConstraint("tenant_id", "scope", name="uq_communication_tenant_quota_scope"),
+        CheckConstraint("tenant_id IS NOT NULL AND tenant_id <> ''", name="ck_communication_tenant_quota_tenant_id_nonempty"),
         {"extend_existing": True},
     )
 

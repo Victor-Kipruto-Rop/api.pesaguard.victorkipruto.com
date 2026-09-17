@@ -31,6 +31,14 @@ from sqlalchemy.pool import StaticPool
 
 logger = logging.getLogger("pesaguard.auth_rbac")
 
+
+def _record_security_event() -> None:
+    try:
+        from metrics import record_security_event
+        record_security_event()
+    except Exception:
+        logger.debug("Unable to record authentication security metric", exc_info=True)
+
 _INSECURE_DEV_SECRET = "pesaguard-secret-key-change-in-prod"
 
 
@@ -52,7 +60,7 @@ if not SECRET_KEY:
     ):
         SECRET_KEY = _INSECURE_DEV_SECRET
         logger.warning(
-            "JWT_SECRET_KEY is not set — using an insecure dev secret because "
+            "JWT_SECRET_KEY is not set â€” using an insecure dev secret because "
             "PESAGUARD_ALLOW_INSECURE_DEV_SECRET=1. Never use this in production."
         )
     else:
@@ -171,7 +179,7 @@ def _account_is_active_and_current(user_id: str, tenant_id: str, authorization_v
             {"user_id": user_id, "tenant_id": tenant_id},
         ).first()
         if row is None:
-            return True
+            return False
         return row[0] == "active" and int(row[1]) == authorization_version
     except Exception as exc:
         session.rollback()
@@ -182,10 +190,10 @@ def _account_is_active_and_current(user_id: str, tenant_id: str, authorization_v
 
 def auth_required() -> bool:
     """Allow auth bypass only outside production deployments."""
-    if os.getenv("PESAGUARD_API_AUTH_REQUIRED", "1") == "1":
-        return True
     environment = os.getenv("FLASK_ENV", os.getenv("ENVIRONMENT", "development")).lower()
-    return environment not in {"production", "prod"}
+    if environment in {"production", "prod"}:
+        return True
+    return os.getenv("PESAGUARD_API_AUTH_REQUIRED", "1") == "1"
 
 
 def assert_auth_configuration() -> None:
@@ -269,6 +277,11 @@ def _ensure_revocation_store_ready() -> None:
                         pool_size=int(os.getenv("DB_POOL_SIZE", "5")),
                         max_overflow=int(os.getenv("DB_MAX_OVERFLOW", "10")),
                     )
+                try:
+                    from metrics import instrument_engine_query_timing
+                    instrument_engine_query_timing(engine)
+                except Exception:
+                    logger.debug("Revocation store engine query timing instrumentation skipped.", exc_info=True)
                 _revocation_engine = engine
                 _RevocationSession = sessionmaker(bind=engine, expire_on_commit=False)
             engine = _revocation_engine
@@ -350,6 +363,36 @@ class AuthRBAC:
     """Authentication, JWT lifecycle, and Role-Based Access Control manager."""
 
     ROLE_PERMISSIONS: Dict[str, List[str]] = {
+        "owner": [
+            "read:discrepancies",
+            "write:discrepancies",
+            "delete:discrepancies",
+            "read:analytics",
+            "write:escalation_rules",
+            "read:settings",
+            "write:settings",
+            "manage:webhooks",
+            "manage:users",
+            "manage:on_call",
+            "manage:settings",
+            "manage:organizations",
+            "manage:teams",
+            "manage:departments",
+            "manage:billing",
+            "manage:providers",
+            "read:providers",
+            "read:usage",
+            "bulk:operations",
+            "read:metrics",
+            "send:communications",
+            "read:communications",
+            "export:communications",
+            "manage:api_keys",
+            "manage:mfa",
+            "manage:all_tenants",
+            "manage:tenant_isolation",
+            "manage:security",
+        ],
         "admin": [
             "read:discrepancies",
             "write:discrepancies",
@@ -376,6 +419,57 @@ class AuthRBAC:
             "export:communications",
             "manage:api_keys",
             "manage:mfa",
+        ],
+        "finance": [
+            "read:discrepancies",
+            "read:analytics",
+            "read:settings",
+            "read:providers",
+            "read:usage",
+            "read:metrics",
+            "export:communications",
+            "read:reports",
+            "read:transactions",
+            "read:revenue",
+        ],
+        "operations": [
+            "read:discrepancies",
+            "write:discrepancies",
+            "read:analytics",
+            "read:settings",
+            "read:providers",
+            "read:usage",
+            "bulk:operations",
+            "read:metrics",
+            "read:transactions",
+        ],
+        "analyst": [
+            "read:discrepancies",
+            "read:analytics",
+            "read:settings",
+            "read:providers",
+            "read:usage",
+            "read:metrics",
+            "read:reports",
+            "read:transactions",
+        ],
+        "auditor": [
+            "read:discrepancies",
+            "read:analytics",
+            "read:settings",
+            "read:providers",
+            "read:usage",
+            "read:metrics",
+            "read:reports",
+            "read:transactions",
+            "read:audit_logs",
+            "read:revenue",
+        ],
+        "read-only": [
+            "read:discrepancies",
+            "read:analytics",
+            "read:providers",
+            "read:usage",
         ],
         "platform-admin": [
             "read:discrepancies",
@@ -443,12 +537,6 @@ class AuthRBAC:
             "manage:departments",
             "read:usage",
             "read:settings",
-        ],
-        "read-only": [
-            "read:discrepancies",
-            "read:analytics",
-            "read:providers",
-            "read:usage",
         ],
     }
 
@@ -1044,10 +1132,12 @@ def require_auth(required_permission: Optional[str] = None):
             if not auth_header and api_key:
                 user = AuthRBAC.verify_api_key(api_key)
                 if user is None:
+                    _record_security_event()
                     return jsonify({"error": "invalid_api_key", "message": "API key is invalid, expired, or revoked."}), 401
             elif not auth_header:
                 if not authentication_required:
                     return f(*args, **kwargs)
+                _record_security_event()
                 return jsonify({"error": "missing_auth_header", "message": "Authorization header is required."}), 401
 
             else:
@@ -1055,22 +1145,31 @@ def require_auth(required_permission: Optional[str] = None):
                 if user is None:
                     token = parse_bearer_token(auth_header)
                     if token is None:
+                        _record_security_event()
                         return jsonify({"error": "invalid_auth_header", "message": "Malformed Authorization header format."}), 401
                     try:
                         user = AuthRBAC.verify_token(token)
                     except AuthenticationUnavailable:
+                        _record_security_event()
                         return jsonify({
                             "error": "authentication_unavailable",
                             "message": "Authentication state is temporarily unavailable.",
                         }), 503
             if not user:
+                _record_security_event()
                 return jsonify({"error": "invalid_token", "message": "Token is invalid, expired, or revoked."}), 401
 
             if required_permission and not AuthRBAC.check_permission(user, required_permission):
+                _record_security_event()
                 logger.warning("User %s denied access. Required permission: %s", user.user_id, required_permission)
                 return jsonify({"error": "insufficient_permissions", "message": "Forbidden: Insufficient privileges."}), 403
 
             g.user = user
+            try:
+                from logging_utils import bind_observability_context
+                bind_observability_context(tenant_id=user.tenant_id)
+            except Exception:
+                logger.debug("Unable to bind authenticated observability context", exc_info=True)
             return f(*args, **kwargs)
 
         return decorated_function
@@ -1100,6 +1199,7 @@ def require_tenant_access():
                 return jsonify({"error": "invalid_tenant_id", "message": "tenant_id has an invalid format."}), 400
 
             if not AuthRBAC.check_tenant_access(g.user, tenant_id):
+                _record_security_event()
                 logger.warning("Tenant access violation attempt by user %s on tenant %s", g.user.user_id, tenant_id)
                 return jsonify({"error": "tenant_access_denied", "message": "Access to this tenant scope is forbidden."}), 403
 

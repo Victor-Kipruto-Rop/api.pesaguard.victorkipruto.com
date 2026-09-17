@@ -25,6 +25,5 @@ exec rq worker \
   --path /app \
   --path /app/pesaguard_backend_pipeline \
   --url "${REDIS_URL}" \
-  --burst=false \
   --worker-class rq.Worker \
   ${RQ_QUEUES}

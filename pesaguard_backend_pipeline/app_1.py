@@ -43,6 +43,11 @@ else:
         max_overflow=int(os.getenv("DB_MAX_OVERFLOW", "10")),
         connect_args={"connect_timeout": 5} if "postgresql" in DATABASE_URL else {},
     )
+try:
+    from metrics import instrument_engine_query_timing
+    instrument_engine_query_timing(engine)
+except Exception:
+    logger.debug("app_1 engine query timing instrumentation skipped.", exc_info=True)
 Session = sessionmaker(bind=engine, expire_on_commit=False)
 
 # Statuses representing genuine blocking reconciliation issues
@@ -62,6 +67,11 @@ def _require_dashboard_auth() -> None:
         abort(500, description="Dashboard API authentication is misconfigured.")
 
     if not token or token != admin_api_token:
+        try:
+            from metrics import record_security_event
+            record_security_event()
+        except Exception:
+            pass
         logger.warning("Unauthorized dashboard API access attempt from IP: %s", request.remote_addr)
         abort(403, description="Forbidden: Invalid or missing administrator token.")
 

@@ -304,7 +304,10 @@ class WebhookManager:
 
         deliveries = (
             self.session.query(WebhookDelivery)
-            .filter(WebhookDelivery.webhook_id == webhook_id)
+            .filter(
+                WebhookDelivery.webhook_id == webhook_id,
+                WebhookDelivery.tenant_id == tenant_id,
+            )
             .order_by(WebhookDelivery.created_at.desc())
             .limit(limit)
             .all()

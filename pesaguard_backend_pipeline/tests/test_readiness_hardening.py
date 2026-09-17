@@ -16,6 +16,7 @@ def webhook_client(monkeypatch):
         monkeypatch.setenv("DATABASE_URL", f"sqlite:///{os.path.join(tmpdir, 'pesaguard_test.db')}")
         monkeypatch.setenv("DARAJA_ALLOWED_IPS", "127.0.0.1")
         monkeypatch.setenv("DARAJA_SHARED_SECRET", "test-secret")
+        monkeypatch.setenv("TENANT_ID", "tenant-a")
         monkeypatch.setenv("PESAGUARD_WEBHOOK_MAX_BODY_BYTES", "256")
         import app as webhook_app
 
@@ -23,6 +24,10 @@ def webhook_client(monkeypatch):
         webhook_app.app.config.update(TESTING=True)
         with webhook_app.app.test_client() as client:
             yield client
+        try:
+            webhook_app.event_store.engine.dispose()
+        except Exception:
+            pass
 
 
 @pytest.fixture()
@@ -37,6 +42,34 @@ def dashboard_client(monkeypatch):
         app_2.Base.metadata.create_all(app_2.engine)
         from auth_rbac import _RevocationBase
         _RevocationBase.metadata.create_all(app_2.primary_engine)
+        session = app_2.SessionLocal()
+        try:
+            session.add_all([
+                app_2.UserAccount(
+                    id="ops-1",
+                    tenant_id="tenant-a",
+                    username="ops",
+                    roles=["operator"],
+                    permissions=[],
+                    status="active",
+                    authorization_version=1,
+                ),
+                app_2.UserAccount(
+                    id="ops-tenant-a",
+                    tenant_id="tenant-a",
+                    username="ops-tenant-a",
+                    roles=["operator"],
+                    permissions=[],
+                    status="active",
+                    authorization_version=1,
+                ),
+            ])
+            session.commit()
+        except Exception:
+            session.rollback()
+            raise
+        finally:
+            session.close()
         app_2.app.config.update(TESTING=False)
         with app_2.app.test_client() as client:
             yield client, app_2

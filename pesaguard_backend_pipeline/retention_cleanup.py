@@ -51,11 +51,17 @@ BATCH_SIZE = int(os.getenv("PESAGUARD_RETENTION_BATCH_SIZE", "1000"))
 
 def get_engine():
     """Construct database engine instance with connection pooling."""
-    return create_engine(
+    engine = create_engine(
         get_database_url(),
         pool_pre_ping=True,
         connect_args={"connect_timeout": 10} if get_database_url().startswith("postgresql") else {},
     )
+    try:
+        from metrics import instrument_engine_query_timing
+        instrument_engine_query_timing(engine)
+    except Exception:
+        logger.debug("Retention cleanup engine query timing instrumentation skipped.", exc_info=True)
+    return engine
 
 
 def get_session_factory():

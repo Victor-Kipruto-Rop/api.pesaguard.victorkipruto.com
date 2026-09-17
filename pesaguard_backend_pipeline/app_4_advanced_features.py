@@ -74,11 +74,11 @@ def _idempotent_route(rule, **options):
         endpoint = options.get("endpoint") or view_func.__name__
         methods = {str(m).upper() for m in (options.get("methods") or ["GET"])}
 
-        # Same endpoint already bound (module reload) — keep the existing view.
+        # Same endpoint already bound (module reload) â€” keep the existing view.
         if endpoint in app.view_functions:
             return view_func
 
-        # Same rule already serving every method requested — nothing to add.
+        # Same rule already serving every method requested â€” nothing to add.
         for existing_rule in app.url_map.iter_rules():
             if existing_rule.rule != rule:
                 continue
@@ -98,19 +98,29 @@ DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://pesaguard:pesaguard@local
 def create_db_engine(url: str):
     """Create a robust database engine with appropriate pooling and timeout settings."""
     if url.startswith("sqlite"):
-        return create_engine(
+        engine = create_engine(
             url,
             connect_args={"check_same_thread": False},
             poolclass=StaticPool,
         )
+    else:
+        engine = create_engine(
+            url,
+            pool_pre_ping=True,
+            pool_size=int(os.getenv("DB_POOL_SIZE", "10")),
+            max_overflow=int(os.getenv("DB_MAX_OVERFLOW", "20")),
+            connect_args={"connect_timeout": 5} if "postgresql" in url else {},
+        )
+    _instrument_engine_query_timing(engine)
+    return engine
 
-    return create_engine(
-        url,
-        pool_pre_ping=True,
-        pool_size=int(os.getenv("DB_POOL_SIZE", "10")),
-        max_overflow=int(os.getenv("DB_MAX_OVERFLOW", "20")),
-        connect_args={"connect_timeout": 5} if "postgresql" in url else {},
-    )
+
+def _instrument_engine_query_timing(engine) -> None:
+    try:
+        from metrics import instrument_engine_query_timing
+        instrument_engine_query_timing(engine)
+    except Exception:
+        logger.debug("Engine query timing instrumentation skipped.", exc_info=True)
 
 
 engine = create_db_engine(DATABASE_URL)
@@ -377,7 +387,7 @@ def _resolve_oidc_provider(tenant_id: Optional[str] = None, issuer: Optional[str
             provider = query.filter(OIDCProvider.tenant_id == candidate_tenant).order_by(OIDCProvider.created_at.desc()).first()
             if provider:
                 return provider
-        env_issuer = os.getenv("OIDC_ISSUER") or (request.url_root.rstrip("/") if request.url_root else "https://localhost")
+        env_issuer = os.getenv("OIDC_ISSUER") or (request.url_root.rstrip("/") if request.url_root else "https://api.pesaguard.victorkipruto.com")
         provider = query.filter(OIDCProvider.issuer == env_issuer).order_by(OIDCProvider.created_at.desc()).first()
         if provider:
             return provider
@@ -982,7 +992,7 @@ def oidc_config_route():
         finally:
             session.close()
     if provider is None:
-        issuer = os.getenv("OIDC_ISSUER") or (request.url_root.rstrip("/") or "https://localhost")
+        issuer = os.getenv("OIDC_ISSUER") or (request.url_root.rstrip("/") or "https://api.pesaguard.victorkipruto.com")
         base_url = issuer.rstrip("/")
     else:
         base_url = provider.issuer.rstrip("/")
@@ -1439,6 +1449,9 @@ def verify_mfa_route():
             return _api_success({"verified": False, "status": record.status}, 200)
         record.attempts += 1
         verified = hmac.compare_digest(record.code_hash, hashlib.sha256(str(code).encode("utf-8")).hexdigest())
+        if not verified:
+            from metrics import record_security_event
+            record_security_event()
         record.status = "verified" if verified else ("failed" if record.attempts >= 5 else "pending")
         session.commit()
         return _api_success({"verified": verified, "status": record.status, "challenge_id": challenge_id}, 200)
@@ -1507,6 +1520,9 @@ def verify_passwordless_route():
             return _api_success({"verified": False, "status": record.status}, 200)
         record.attempts += 1
         verified = hmac.compare_digest(record.token_hash, hashlib.sha256(str(token).encode("utf-8")).hexdigest())
+        if not verified:
+            from metrics import record_security_event
+            record_security_event()
         record.status = "verified" if verified else ("failed" if record.attempts >= 5 else "pending")
         session.commit()
         return _api_success({"verified": verified, "status": record.status, "challenge_id": challenge_id}, 200)
@@ -2145,7 +2161,7 @@ def bulk_escalate_incidents():
 if __name__ == "__main__":
     debug_mode = os.getenv("FLASK_DEBUG", "0") == "1"
     if debug_mode:
-        logger.warning("Running with debug=True — never do this in production.")
+        logger.warning("Running with debug=True â€” never do this in production.")
     port = int(os.getenv("PORT", 5002))
     app.run(debug=debug_mode, host=os.getenv("PESAGUARD_BIND_HOST", "127.0.0.1"), port=port)
 

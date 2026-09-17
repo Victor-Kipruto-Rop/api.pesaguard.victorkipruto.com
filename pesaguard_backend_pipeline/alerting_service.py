@@ -13,6 +13,12 @@ from sqlalchemy.orm import Session
 from models import Discrepancy
 from notifier import send_email_alert, send_slack_alert, send_sms_alert
 
+try:
+    from metrics import record_alert_delivery
+except Exception:  # pragma: no cover - metrics must never break alerting
+    def record_alert_delivery(channel: str, success: bool) -> None:  # type: ignore[misc]
+        return None
+
 logger = logging.getLogger("pesaguard.alerting.service")
 
 
@@ -56,20 +62,26 @@ class AlertingService:
         for channel in channels:
             try:
                 if channel == "slack":
-                    send_slack_alert(discrepancy, locale=locale)
+                    delivered = bool(send_slack_alert(discrepancy, locale=locale))
                 elif channel == "sms":
-                    send_sms_alert(discrepancy, locale=locale)
+                    delivered = bool(send_sms_alert(discrepancy, locale=locale))
                 elif channel == "email":
-                    send_email_alert(discrepancy, locale=locale)
+                    delivered = bool(send_email_alert(discrepancy, locale=locale))
                 else:
                     logger.warning("Unrecognized notification channel requested: %s", channel)
+                    record_alert_delivery(channel, False)
                     deliveries.append({"channel": channel, "status": "failed", "error": "unsupported_channel"})
                     continue
 
-                deliveries.append({"channel": channel, "status": "sent", "timestamp": datetime.now(timezone.utc).isoformat()})
-                logger.info("Alert delivered successfully via channel=%s alert_id=%s", channel, alert_id)
+                record_alert_delivery(channel, delivered)
+                deliveries.append({"channel": channel, "status": "sent" if delivered else "failed", "timestamp": datetime.now(timezone.utc).isoformat()})
+                if delivered:
+                    logger.info("Alert delivered successfully via channel=%s alert_id=%s", channel, alert_id)
+                else:
+                    logger.warning("Alert delivery reported failure via channel=%s alert_id=%s", channel, alert_id)
 
             except Exception as exc:
+                record_alert_delivery(channel, False)
                 logger.exception("Alert delivery failed for channel=%s alert_id=%s: %s", channel, alert_id, exc)
                 deliveries.append({"channel": channel, "status": "failed", "error": str(exc)})
 

@@ -62,6 +62,11 @@ def _get_or_create_engine(database_url: str, timeout: int):
             else:
                 engine_kwargs.update({"pool_size": 2, "max_overflow": 0})
             engine = create_engine(database_url, **engine_kwargs)
+            try:
+                from metrics import instrument_engine_query_timing
+                instrument_engine_query_timing(engine)
+            except Exception:
+                logger.debug("Health engine query timing instrumentation skipped.", exc_info=True)
             _db_engines[cache_key] = engine
         return engine
 

@@ -1,0 +1,11 @@
+[
+  {"name": "exact match", "transaction_id": "exact", "amount": "100.00", "record_amount": "100.00", "time_offset_seconds": 0, "expected_status": "MATCHED"},
+  {"name": "amount mismatch", "transaction_id": "amount", "amount": "100.00", "record_amount": "125.00", "time_offset_seconds": 0, "expected_status": "MISMATCH"},
+  {"name": "timestamp mismatch", "transaction_id": "time", "amount": "100.00", "record_amount": "100.00", "time_offset_seconds": 10800, "expected_status": "MISMATCH"},
+  {"name": "missing record", "transaction_id": "missing", "amount": "100.00", "record_amount": null, "time_offset_seconds": null, "expected_status": "UNMATCHED"},
+  {"name": "duplicate transaction", "transaction_id": "duplicate", "amount": "100.00", "record_amount": "100.00", "time_offset_seconds": 0, "expected_status": "DUPLICATE"},
+  {"name": "refund", "transaction_id": "refund", "amount": "100.00", "record_amount": "100.00", "time_offset_seconds": 0, "transaction_type": "refund", "original_transaction_id": "original-refund", "expected_status": "MATCHED"},
+  {"name": "reversal", "transaction_id": "reversal", "amount": "100.00", "record_amount": "100.00", "time_offset_seconds": 0, "transaction_type": "reversal", "original_transaction_id": "original-reversal", "expected_status": "MATCHED"},
+  {"name": "partial payment", "transaction_id": "partial", "amount": "100.00", "record_amount": "60.00", "time_offset_seconds": 0, "expected_status": "PARTIAL"},
+  {"name": "late-arriving transaction", "transaction_id": "late", "amount": "100.00", "record_amount": "100.00", "time_offset_seconds": 0, "expected_status": "MATCHED"}
+]

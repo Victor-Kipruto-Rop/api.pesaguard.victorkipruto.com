@@ -15,14 +15,25 @@ from .models import CommunicationDeliveryReport, CommunicationNotification, Comm
 from .core.state_machine import transition
 
 
+def _record_security_event() -> None:
+    try:
+        from metrics import record_security_event
+        record_security_event()
+    except Exception:
+        pass
+
+
 def verify_signature(raw_body: bytes, signature: str | None, secret: str) -> None:
     if not secret:
+        _record_security_event()
         raise ValueError("webhook secret is not configured")
     if not signature:
+        _record_security_event()
         raise ValueError("webhook signature is required")
     provided = signature.removeprefix("sha256=").strip()
     expected = hmac.new(secret.encode("utf-8"), raw_body, hashlib.sha256).hexdigest()
     if not hmac.compare_digest(provided, expected):
+        _record_security_event()
         raise ValueError("invalid webhook signature")
 
 

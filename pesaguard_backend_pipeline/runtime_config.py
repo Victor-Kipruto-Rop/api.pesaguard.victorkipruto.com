@@ -16,6 +16,7 @@ def _int_env(name: str, default: int) -> int:
 
 @dataclass(frozen=True)
 class RuntimeConfig:
+    public_api_url: str
     api_body_limit: int
     webhook_body_limit: int
     api_rate_limit_per_minute: int
@@ -30,6 +31,7 @@ class RuntimeConfig:
     @classmethod
     def from_env(cls) -> "RuntimeConfig":
         return cls(
+            public_api_url=os.getenv("PESAGUARD_API_URL", "https://api.pesaguard.victorkipruto.com").rstrip("/"),
             api_body_limit=_int_env("PESAGUARD_API_MAX_BODY_BYTES", 1048576),
             webhook_body_limit=_int_env("PESAGUARD_WEBHOOK_MAX_BODY_BYTES", 1048576),
             api_rate_limit_per_minute=_int_env("PESAGUARD_API_RATE_LIMIT_PER_MINUTE", 60),

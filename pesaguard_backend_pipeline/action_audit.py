@@ -21,7 +21,18 @@ from sqlalchemy.orm import validates
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey, Ed25519PublicKey
 
-from pesaguard_backend_pipeline.models import Base
+try:
+    from models import Base as _LocalBase
+except Exception:
+    _LocalBase = None
+
+try:
+    from pesaguard_backend_pipeline.models import Base
+except Exception:
+    Base = _LocalBase
+
+if Base is None:
+    Base = declarative_base()
 
 
 MAX_TENANT_ID_LENGTH = 128

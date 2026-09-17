@@ -193,9 +193,20 @@ def issue_otp(
 def verify_otp(session: Session, challenge: CommunicationOtpChallenge, code: str, *, now: datetime | None = None) -> bool:
     now = now or utc_now()
     if challenge.consumed_at or challenge.expires_at <= now or challenge.attempts >= challenge.max_attempts:
+        try:
+            from metrics import record_security_event
+            record_security_event()
+        except Exception:
+            pass
         return False
     challenge.attempts += 1
     valid = hmac.compare_digest(challenge.code_hash, _hash_otp(code))
+    if not valid:
+        try:
+            from metrics import record_security_event
+            record_security_event()
+        except Exception:
+            pass
     if valid:
         challenge.consumed_at = now
     session.flush()

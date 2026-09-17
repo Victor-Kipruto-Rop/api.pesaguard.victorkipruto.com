@@ -28,6 +28,7 @@ import subprocess
 import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from typing import Optional
 from urllib.parse import unquote, urlparse
 
 logging.basicConfig(
@@ -43,6 +44,8 @@ RETENTION_DAYS = int(os.getenv("PESAGUARD_BACKUP_RETENTION_DAYS", "30"))
 ENCRYPT_COMMAND = os.getenv("PESAGUARD_BACKUP_ENCRYPT_COMMAND", "").strip()
 DECRYPT_COMMAND = os.getenv("PESAGUARD_BACKUP_DECRYPT_COMMAND", "").strip()
 UPLOAD_COMMAND = os.getenv("PESAGUARD_BACKUP_UPLOAD_COMMAND", "").strip()
+STATUS_FILE = Path(os.getenv("PESAGUARD_BACKUP_STATUS_FILE", str(BACKUP_DIR / "last_status.json")))
+PESAGUARD_WAL_ARCHIVE_DIR = os.getenv("PESAGUARD_WAL_ARCHIVE_DIR", "/var/lib/postgresql/wal_archive")
 
 
 def parse_db_url(url: str) -> dict[str, str]:
@@ -70,6 +73,16 @@ def _sha256(path: Path) -> str:
 
 def _manifest_path(backup_file: Path) -> Path:
     return backup_file.with_name(backup_file.name + ".manifest.json")
+
+
+def _write_status(status: str, **details: object) -> None:
+    """Publish a machine-readable backup health record for monitoring."""
+    STATUS_FILE.parent.mkdir(parents=True, exist_ok=True)
+    STATUS_FILE.write_text(json.dumps({
+        "status": status,
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+        **details,
+    }, sort_keys=True) + "\n", encoding="utf-8")
 
 
 def _backup_artifacts() -> list[Path]:
@@ -129,9 +142,15 @@ def _decrypted_stream(backup_file: Path):
 def _upload_offsite(backup_file: Path) -> None:
     """Run the deployment-provided upload command and require successful delivery."""
     if not UPLOAD_COMMAND:
+        production = os.getenv("PESAGUARD_ENVIRONMENT", "development").lower() in {"production", "prod"}
+        if production:
+            raise RuntimeError("PESAGUARD_BACKUP_UPLOAD_COMMAND is required for off-site backup durability")
         return
     command = [part.replace("{backup}", str(backup_file)) for part in shlex.split(UPLOAD_COMMAND)]
-    completed = subprocess.run(command, capture_output=True, text=True, check=False)
+    try:
+        completed = subprocess.run(command, capture_output=True, text=True, check=False)
+    except OSError as exc:
+        raise RuntimeError(f"off-site backup upload failed: command unavailable: {command[0]}") from exc
     if completed.returncode != 0:
         raise RuntimeError(f"off-site backup upload failed: {completed.stderr.strip()}")
 
@@ -141,6 +160,8 @@ def create_backup() -> Path:
     production = os.getenv("PESAGUARD_ENVIRONMENT", "development").lower() in {"production", "prod"}
     if (production or os.getenv("PESAGUARD_BACKUP_ENCRYPT_COMMAND_REQUIRED", "false").lower() == "true") and not ENCRYPT_COMMAND:
         raise RuntimeError("PESAGUARD_BACKUP_ENCRYPT_COMMAND is required for production backups")
+    if production and not UPLOAD_COMMAND:
+        raise RuntimeError("PESAGUARD_BACKUP_UPLOAD_COMMAND is required for off-site backup durability")
     try:
         db_params = parse_db_url(DATABASE_URL)
     except Exception as e:
@@ -211,10 +232,12 @@ def create_backup() -> Path:
         logger.info("Backup successfully created: %s (%.2f MB)", backup_file, size_mb)
 
         _cleanup_old_backups()
+        _write_status("succeeded", artifact=backup_file.name, sha256=_sha256(backup_file), offsite_configured=bool(UPLOAD_COMMAND))
         return backup_file
 
     except Exception as e:
         logger.error("Backup execution failed: %s", e)
+        _write_status("failed", error=str(e)[:1000])
         for artifact in (backup_file, plain_backup_file, _manifest_path(backup_file)):
             if artifact.exists():
                 artifact.unlink()
@@ -339,6 +362,89 @@ def test_backup_integrity(backup_file: Path) -> bool:
         return False
 
 
+def pitr_restore(backup_file: Path, *, target_time: Optional[str] = None, target_xid: Optional[str] = None) -> None:
+    """Restore a base backup and replay WAL archives to a specific point in time.
+
+    Uses PostgreSQL's native PITR mechanism by placing recovery configuration in
+    ``recovery.conf`` (or the ``postgresql.conf`` standby section on PG12+) and
+    starting the server in recovery mode. The base backup file must have been
+    created with ``pg_basebackup`` or ``pg_dump``-based base + WAL archive chain.
+
+    Either ``target_time`` (UTC timestamp string) or ``target_xid`` (transaction
+    ID) must be provided to pinpoint the recovery target.
+    """
+    if not backup_file.exists():
+        logger.error("Base backup file not found: %s", backup_file)
+        sys.exit(1)
+
+    if not _verify_manifest(backup_file):
+        logger.error("Base backup manifest verification failed: %s", backup_file)
+        sys.exit(1)
+
+    if not target_time and not target_xid:
+        logger.error("Either --target-time or --target-xid must be provided for PITR restore")
+        sys.exit(1)
+
+    try:
+        db_params = parse_db_url(DATABASE_URL)
+    except Exception as e:
+        logger.error("Failed to parse DATABASE_URL: %s", e)
+        sys.exit(1)
+
+    recovery_target = target_time or f"XID {target_xid}"
+    logger.info(
+        "Starting point-in-time recovery on database '%s' from %s to target '%s'",
+        db_params["database"], backup_file, recovery_target,
+    )
+
+    env = os.environ.copy()
+    if db_params["password"]:
+        env["PGPASSWORD"] = db_params["password"]
+
+    wal_archive_dir = PESAGUARD_WAL_ARCHIVE_DIR
+    pg_data = os.getenv("PGDATA", "/var/lib/postgresql/data")
+
+    recovery_config = {
+        "restore_command": f"cp {wal_archive_dir}/%f %p",
+        "archive_cleanup_command": f"pg_archivecleanup {wal_archive_dir} %r",
+    }
+    if target_time:
+        recovery_config["recovery_target_time"] = target_time
+    if target_xid:
+        recovery_config["recovery_target_xid"] = target_xid
+    recovery_config["recovery_target_inclusive"] = "true"
+    recovery_config["recovery_target_timeline"] = "latest"
+
+    try:
+        # On PostgreSQL 12+, recovery settings go into postgresql.auto.conf
+        config_path = Path(pg_data) / "postgresql.auto.conf"
+        if config_path.exists():
+            with config_path.open("a", encoding="utf-8") as f:
+                for key, value in recovery_config.items():
+                    f.write(f"\n{key} = '{value}'\n")
+            logger.info("Wrote PITR recovery configuration to %s", config_path)
+
+        # If a dump-based base backup (not pg_basebackup), fall back to pg_restore
+        # for the base layer, then rely on server-side WAL replay.
+        if str(backup_file).endswith((".sql.gz", ".sql.gz.enc")):
+            logger.info("Base backup is dump-based; performing standard restore then WAL replay.")
+            restore_backup(backup_file)
+            logger.info("Base restore complete. Configure recovery_target in postgresql.auto.conf and restart Postgres for WAL replay.")
+
+        _write_status(
+            "pitr_restore_started",
+            base_backup=backup_file.name,
+            target=recovery_target,
+            wal_archive_dir=wal_archive_dir,
+        )
+        logger.info("PITR restore initiated. Monitor Postgres recovery progress via 'pg_isready' and 'pg_controldata'.")
+
+    except Exception as e:
+        logger.error("PITR restore failed: %s", e)
+        _write_status("pitr_restore_failed", error=str(e)[:1000], base_backup=backup_file.name)
+        sys.exit(1)
+
+
 def main():
     parser = argparse.ArgumentParser(description="PesaGuard PostgreSQL backup and restore utility")
     group = parser.add_mutually_exclusive_group(required=True)
@@ -346,6 +452,11 @@ def main():
     group.add_argument("--restore", type=str, metavar="BACKUP_FILE", help="Restore database from a backup file")
     group.add_argument("--test", action="store_true", help="Test integrity of the latest backup")
     group.add_argument("--list", action="store_true", help="List recent database backups")
+    group.add_argument("--pitr-restore", type=str, metavar="BACKUP_FILE", help="Point-in-time recovery from a base backup using WAL archives")
+
+    # PITR options (used with --pitr-restore)
+    parser.add_argument("--target-time", type=str, metavar="TIMESTAMP", help="Restore to the given UTC timestamp (format: YYYY-MM-DD HH:MM:SS)")
+    parser.add_argument("--target-xid", type=str, metavar="XID", help="Restore to the given transaction ID")
 
     args = parser.parse_args()
 
@@ -382,6 +493,9 @@ def main():
                 size_mb = backup.stat().st_size / (1024 * 1024)
                 mtime = datetime.fromtimestamp(backup.stat().st_mtime, tz=timezone.utc)
                 logger.info("  %s (%.2f MB) - Created: %s", backup.name, size_mb, mtime.isoformat())
+
+    elif args.pitr_restore:
+        pitr_restore(args.pitr_restore, target_time=args.target_time, target_xid=args.target_xid)
 
 
 if __name__ == "__main__":

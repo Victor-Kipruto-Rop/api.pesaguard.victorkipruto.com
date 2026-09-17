@@ -248,6 +248,8 @@ def rate_limit(
             g.rate_limit_status = status
 
             if not allowed:
+                from metrics import record_security_event
+                record_security_event()
                 retry_after = status.get("reset_in", 60)
                 resp = jsonify({
                     "error": "rate_limit_exceeded",

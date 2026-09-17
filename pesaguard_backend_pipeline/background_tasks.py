@@ -39,6 +39,12 @@ else:
     )
 TaskSessionLocal = sessionmaker(bind=_task_db_engine, expire_on_commit=False)
 
+try:
+    from metrics import instrument_engine_query_timing
+    instrument_engine_query_timing(_task_db_engine)
+except Exception:
+    logger.debug("Task DB engine query timing instrumentation skipped.", exc_info=True)
+
 
 def handle_job_failure(job, connection, type, value, traceback) -> None:
     """
@@ -191,6 +197,7 @@ def drain_transaction_outbox(limit: int = 100) -> Dict[str, Any]:
     """Publish a bounded durable outbox batch and retain failures for replay."""
     from event_store import EventStore
     from producer import publish_transaction_event
+    from data_protection import unprotect_payload
 
     store = EventStore(database_url=DATABASE_URL)
     claimed = store.claim_outbox_batch(limit=limit)
@@ -198,7 +205,7 @@ def drain_transaction_outbox(limit: int = 100) -> Dict[str, Any]:
     failed = 0
     for row in claimed:
         try:
-            publish_transaction_event(row["topic"], row["payload"])
+            publish_transaction_event(row["topic"], unprotect_payload(row["payload"] or {}))
             store.mark_outbox_published(row["id"])
             published += 1
         except Exception as exc:

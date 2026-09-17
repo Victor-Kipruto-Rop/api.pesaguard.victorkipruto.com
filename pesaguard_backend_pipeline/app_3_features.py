@@ -41,19 +41,25 @@ DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://pesaguard:pesaguard@local
 def create_db_engine(url: str):
     """Create a robust database engine with appropriate pooling and timeout settings."""
     if url.startswith("sqlite"):
-        return create_engine(
+        engine = create_engine(
             url,
             connect_args={"check_same_thread": False},
             poolclass=StaticPool,
         )
-
-    return create_engine(
-        url,
-        pool_pre_ping=True,
-        pool_size=int(os.getenv("DB_POOL_SIZE", "10")),
-        max_overflow=int(os.getenv("DB_MAX_OVERFLOW", "20")),
-        connect_args={"connect_timeout": 5} if "postgresql" in url else {},
-    )
+    else:
+        engine = create_engine(
+            url,
+            pool_pre_ping=True,
+            pool_size=int(os.getenv("DB_POOL_SIZE", "10")),
+            max_overflow=int(os.getenv("DB_MAX_OVERFLOW", "20")),
+            connect_args={"connect_timeout": 5} if "postgresql" in url else {},
+        )
+    try:
+        from metrics import instrument_engine_query_timing
+        instrument_engine_query_timing(engine)
+    except Exception:
+        logger.debug("Engine query timing instrumentation skipped.", exc_info=True)
+    return engine
 
 
 engine = create_db_engine(DATABASE_URL)
@@ -189,6 +195,8 @@ if "login" not in app.view_functions:
 
         user = _verify_credentials(username, password)
         if not user:
+            from metrics import record_security_event
+            record_security_event()
             logger.warning("Failed login attempt for username=%s", username)
             return jsonify({"error": "invalid_credentials", "message": "Invalid username or password."}), 401
 
@@ -865,7 +873,7 @@ def bulk_escalate_incidents():
 if __name__ == "__main__":
     debug_mode = os.getenv("FLASK_DEBUG", "0") == "1"
     if debug_mode:
-        logger.warning("Running with debug=True — never do this in production.")
+        logger.warning("Running with debug=True â€” never do this in production.")
     port = int(os.getenv("PORT", 5002))
     app.run(debug=debug_mode, host=os.getenv("PESAGUARD_BIND_HOST", "127.0.0.1"), port=port)
 

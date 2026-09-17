@@ -133,6 +133,8 @@ class DiscrepancyDAO:
         if record is None:
             return None
         if tenant_id is not None and getattr(record, "tenant_id", None) != tenant_id:
+            from metrics import record_security_event
+            record_security_event()
             logger.warning("Tenant isolation violation: record %s belongs to tenant %s, not %s", id, getattr(record, "tenant_id", None), tenant_id)
             return None
         return record

@@ -107,26 +107,72 @@ def test_reconciliation_job_publishes_discrepancies_to_topic(monkeypatch):
     published = []
 
     class DummyProducer:
-        def send(self, topic, value):
+        def send(self, topic, key=None, value=None):
             published.append((topic, value))
 
+            class Future:
+                def get(self, timeout=None):
+                    return None
+
+            return Future()
+
+        def flush(self, timeout=None):
+            return None
+
+        def close(self, timeout=None):
+            return None
+
     class DummyConsumer:
+        """Poll-shaped consumer (kafka-python-ng contract) that yields one batch."""
+
         def __init__(self):
-            self._messages = iter([
-                SimpleNamespace(value={"TransID": "TX-100", "TransAmount": "100.00", "MSISDN": "254700000000", "TransTime": "20260704120000"})
-            ])
+            self._polls = 0
 
-        def __iter__(self):
-            return self
+        def poll(self, timeout_ms=1000):
+            self._polls += 1
+            if self._polls == 1:
+                message = SimpleNamespace(
+                    value={"TransID": "TX-100", "TransAmount": "100.00", "MSISDN": "254700000000", "TransTime": "20260704120000"},
+                    topic="mpesa.transactions.raw",
+                    partition=0,
+                    offset=0,
+                    headers=[],
+                )
+                return {("mpesa.transactions.raw", 0): [message]}
+            # Stop the run loop on the second poll, after the batch was processed.
+            reconciliation_job._RUNNING = False
+            return {}
 
-        def __next__(self):
-            return next(self._messages)
+        def commit(self, offsets=None):
+            return None
+
+        def close(self):
+            return None
 
     monkeypatch.setattr(reconciliation_job, "KafkaConsumer", lambda *args, **kwargs: DummyConsumer())
     monkeypatch.setattr(reconciliation_job, "KafkaProducer", lambda *args, **kwargs: DummyProducer())
     monkeypatch.setattr(reconciliation_job, "ConnectorRegistry", type("DummyRegistry", (), {"from_env": staticmethod(lambda: type("Dummy", (), {"get_connector": lambda self, tenant_id: None})())}))
     monkeypatch.setattr(reconciliation_job, "check_for_anomalies", lambda event, seen: ["missing_payment"])
+    monkeypatch.setattr(reconciliation_job, "_RUNNING", True)
+
+    # Persist reconciliation outcomes into an isolated database so the audit
+    # tables always exist regardless of test collection order.
+    import tempfile
+    import uuid as uuid_module
+
+    from action_audit import Base as AuditBase
+    from models import Base as ModelsBase
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import sessionmaker
+
+    engine = create_engine(
+        f"sqlite:///{os.path.join(tempfile.gettempdir(), f'alerting-recon-{uuid_module.uuid4().hex}.db')}"
+    )
+    ModelsBase.metadata.create_all(engine)
+    AuditBase.metadata.create_all(engine)
+    monkeypatch.setattr(reconciliation_job, "AuditSession", sessionmaker(bind=engine, expire_on_commit=False))
 
     reconciliation_job.run()
 
     assert any(topic == reconciliation_job.TOPIC_DISCREPANCIES for topic, _ in published)
+    engine.dispose()

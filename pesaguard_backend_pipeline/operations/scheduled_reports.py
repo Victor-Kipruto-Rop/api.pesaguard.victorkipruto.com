@@ -28,6 +28,11 @@ if DB_URL.startswith("sqlite"):
     engine = create_engine(DB_URL, connect_args={"check_same_thread": False})
 else:
     engine = create_engine(DB_URL, pool_pre_ping=True, pool_size=5, max_overflow=10)
+try:
+    from metrics import instrument_engine_query_timing
+    instrument_engine_query_timing(engine)
+except Exception:
+    logger.debug("Scheduled reports engine query timing instrumentation skipped.", exc_info=True)
 Session = sessionmaker(bind=engine, expire_on_commit=False)
 
 def generate_report_for_tenant(
@@ -63,7 +68,8 @@ def generate_report_for_tenant(
             )
 
             total_incidents = len(discrepancies)
-            resolved_count = sum(1 for d in discrepancies if d.resolved)
+            resolved_count = sum(bool(d.resolved)
+                                 for d in discrepancies)
             open_count = total_incidents - resolved_count
             resolution_rate = (resolved_count / total_incidents * 100.0) if total_incidents > 0 else 100.0
 

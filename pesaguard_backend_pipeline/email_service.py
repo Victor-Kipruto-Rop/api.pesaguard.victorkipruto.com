@@ -30,7 +30,7 @@ class EmailService:
         self,
         smtp_server: str = "localhost",
         smtp_port: int = 587,
-        from_email: str = "noreply@pesaguard.local",
+        from_email: str = "",
         from_name: str = "PesaGuard",
         username: Optional[str] = None,
         password: Optional[str] = None,

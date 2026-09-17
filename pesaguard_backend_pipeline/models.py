@@ -13,9 +13,11 @@ from typing import Any, Dict, List, Optional
 
 from sqlalchemy import (
     Boolean,
+    CheckConstraint,
     Column,
     DateTime,
     Float,
+    ForeignKeyConstraint,
     Index,
     Integer,
     JSON,
@@ -29,6 +31,16 @@ from sqlalchemy.orm import declarative_base
 Base = declarative_base()
 
 
+def _transaction_id_default(context):
+    trans_id = str(context.get_current_parameters().get("trans_id") or "").strip()
+    return trans_id
+
+
+def _transaction_key_default(context):
+    trans_id = _transaction_id_default(context)
+    return f"transid:{trans_id.upper()}"
+
+
 class Transaction(Base):
     """Raw M-Pesa transaction events received from Daraja webhooks."""
 
@@ -39,17 +51,162 @@ class Transaction(Base):
         Index("ix_transaction_trans_id", "trans_id"),
         Index("ix_transaction_created_at", "created_at"),
         Index("ix_transaction_msisdn", "msisdn"),
+        UniqueConstraint("tenant_id", "id", name="uq_transaction_tenant_id"),
+        CheckConstraint("tenant_id IS NOT NULL AND tenant_id <> ''", name="ck_transactions_tenant_id_nonempty"),
+        CheckConstraint("trans_amount > 0", name="ck_transactions_trans_amount_positive"),
+        CheckConstraint("length(currency) = 3 AND currency = upper(currency)", name="ck_transactions_currency_iso"),
+        CheckConstraint("status IN ('RECEIVED', 'VALIDATED', 'PROCESSING', 'RECONCILING', 'RECONCILED', 'FAILED', 'REJECTED')", name="ck_transactions_status"),
+        CheckConstraint("version >= 1", name="ck_transactions_version_positive"),
+        UniqueConstraint("tenant_id", "provider", "provider_transaction_id", name="uq_transaction_provider_reference"),
+        UniqueConstraint("tenant_id", "provider", "external_reference", name="uq_transaction_external_reference"),
     )
 
     id = Column(String, primary_key=True, default=lambda: f"txn_{uuid.uuid4().hex}")
     trans_id = Column(String, nullable=False)
-    tenant_id = Column(String, nullable=False, default="default", server_default="default")
+    tenant_id = Column(String, nullable=False)
     provider_account_id = Column(String, nullable=False, default="legacy-default", server_default="legacy-default")
+    provider = Column(String(64), nullable=False, default="mpesa", server_default="mpesa")
+    idempotency_key = Column(String(255), nullable=False, default=_transaction_key_default)
+    external_reference = Column(String(255), nullable=True)
+    provider_transaction_id = Column(String(255), nullable=False, default=_transaction_id_default)
     trans_amount = Column(Numeric(18, 2), nullable=False)
+    currency = Column(String(3), nullable=False, default="KES", server_default="KES")
     msisdn = Column(String, nullable=False)
     business_short_code = Column(String, nullable=False)
     trans_time = Column(String, nullable=False)  # Raw string timestamp format from Daraja
     raw_payload = Column(JSON, nullable=False)
+    status = Column(String(32), nullable=False, default="RECEIVED", server_default="RECEIVED")
+    version = Column(Integer, nullable=False, default=1, server_default="1")
+    created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), nullable=False)
+
+    __mapper_args__ = {"version_id_col": version}
+
+
+class IdempotencyRecord(Base):
+    """Durable request identity ledger shared by API and provider ingestion."""
+
+    __tablename__ = "idempotency_records"
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "provider", "idempotency_key", name="uq_idempotency_request"),
+        UniqueConstraint("tenant_id", "provider", "provider_transaction_id", name="uq_idempotency_provider_reference"),
+        Index("ix_idempotency_tenant_key", "tenant_id", "idempotency_key"),
+        CheckConstraint("tenant_id IS NOT NULL AND tenant_id <> ''", name="ck_idempotency_tenant_id_nonempty"),
+    )
+
+    id = Column(String, primary_key=True)
+    tenant_id = Column(String, nullable=False)
+    provider = Column(String(64), nullable=False)
+    idempotency_key = Column(String(255), nullable=False)
+    external_reference = Column(String(255), nullable=True)
+    provider_transaction_id = Column(String(255), nullable=False)
+    request_hash = Column(String(64), nullable=False)
+    response = Column(JSON, nullable=True)
+    created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), nullable=False)
+
+
+class AuditEvent(Base):
+    """Append-only business audit event ledger."""
+
+    __tablename__ = "audit_events"
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "event_key", name="uq_audit_events_tenant_key"),
+        Index("ix_audit_events_tenant_created", "tenant_id", "created_at"),
+        CheckConstraint("tenant_id IS NOT NULL AND tenant_id <> ''", name="ck_audit_events_tenant_id_nonempty"),
+    )
+
+    id = Column(String, primary_key=True)
+    tenant_id = Column(String, nullable=False)
+    event_key = Column(String, nullable=False)
+    event_type = Column(String, nullable=False)
+    aggregate_type = Column(String, nullable=False)
+    aggregate_id = Column(String, nullable=False)
+    actor = Column(String, nullable=False)
+    payload_hash = Column(String(64), nullable=False)
+    details = Column(JSON, nullable=False, default=dict, server_default="{}")
+    created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), nullable=False)
+
+
+class ReconciliationMatch(Base):
+    """Durable, queryable evidence for one reconciliation decision."""
+
+    __tablename__ = "reconciliation_matches"
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "transaction_id", name="uq_reconciliation_matches_transaction"),
+        Index("ix_reconciliation_matches_tenant_status", "tenant_id", "status", "created_at"),
+        CheckConstraint("tenant_id IS NOT NULL AND tenant_id <> ''", name="ck_reconciliation_matches_tenant_nonempty"),
+        CheckConstraint("status IN ('MATCHED', 'UNMATCHED', 'PARTIAL', 'MISMATCH', 'DUPLICATE', 'PENDING', 'EXCEPTION')", name="ck_reconciliation_matches_status"),
+        CheckConstraint("match_score >= 0 AND match_score <= 1", name="ck_reconciliation_matches_score"),
+    )
+
+    id = Column(String, primary_key=True)
+    tenant_id = Column(String, nullable=False)
+    transaction_id = Column(String, nullable=False)
+    matched_record = Column(JSON, nullable=True)
+    matching_rules = Column(JSON, nullable=False, default=list, server_default="[]")
+    match_score = Column(Numeric(5, 4), nullable=False)
+    match_timestamp = Column(DateTime(timezone=True), nullable=False)
+    engine_version = Column(String(32), nullable=False)
+    status = Column(String(32), nullable=False)
+    processing_latency_ms = Column(Numeric(12, 3), nullable=False)
+    created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), nullable=False)
+
+
+class ReconciliationGroundTruth(Base):
+    """Validated expected outcomes used to calculate certification metrics."""
+
+    __tablename__ = "reconciliation_ground_truth"
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "transaction_id", name="uq_reconciliation_ground_truth_transaction"),
+        Index("ix_reconciliation_ground_truth_validation", "tenant_id", "validated_at"),
+        CheckConstraint("tenant_id IS NOT NULL AND tenant_id <> ''", name="ck_reconciliation_ground_truth_tenant_nonempty"),
+        CheckConstraint("expected_status IN ('MATCHED', 'UNMATCHED', 'PARTIAL', 'MISMATCH', 'DUPLICATE', 'PENDING', 'EXCEPTION')", name="ck_ground_truth_expected_status"),
+        CheckConstraint("actual_status IS NULL OR actual_status IN ('MATCHED', 'UNMATCHED', 'PARTIAL', 'MISMATCH', 'DUPLICATE', 'PENDING', 'EXCEPTION')", name="ck_ground_truth_actual_status"),
+    )
+
+    id = Column(String, primary_key=True)
+    tenant_id = Column(String, nullable=False)
+    transaction_id = Column(String, nullable=False)
+    expected_status = Column(String(32), nullable=False)
+    actual_status = Column(String(32), nullable=True)
+    source = Column(String(64), nullable=False, default="certification", server_default="certification")
+    approved_by = Column(String(128), nullable=False)
+    approval_reference = Column(String(255), nullable=False)
+    approved_at = Column(DateTime(timezone=True), nullable=False)
+    validated_by = Column(String(128), nullable=True)
+    validated_at = Column(DateTime(timezone=True), nullable=True)
+    notes = Column(Text, nullable=True)
+    created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), nullable=False)
+
+
+class TransactionEvent(Base):
+    """Append-only source and lifecycle history for a financial transaction."""
+
+    __tablename__ = "transaction_events"
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "event_key", name="uq_transaction_events_tenant_key"),
+        Index("ix_transaction_events_transaction", "tenant_id", "transaction_id", "created_at"),
+        Index("ix_transaction_events_correlation", "tenant_id", "correlation_id"),
+        CheckConstraint("tenant_id IS NOT NULL AND tenant_id <> ''", name="ck_transaction_events_tenant_id_nonempty"),
+        ForeignKeyConstraint(
+            ["tenant_id", "transaction_id"],
+            ["transactions.tenant_id", "transactions.id"],
+            name="fk_transaction_events_transaction_id",
+        ),
+    )
+
+    id = Column(String, primary_key=True)
+    tenant_id = Column(String, nullable=False)
+    transaction_id = Column(String, nullable=True)
+    trans_id = Column(String, nullable=False)
+    event_key = Column(String, nullable=False)
+    event_type = Column(String, nullable=False)
+    from_state = Column(String, nullable=True)
+    to_state = Column(String, nullable=False)
+    actor = Column(String, nullable=False)
+    reason = Column(Text, nullable=True)
+    payload_hash = Column(String(64), nullable=True)
+    correlation_id = Column(String, nullable=True)
+    details = Column(JSON, nullable=False, default=dict, server_default="{}")
     created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), nullable=False)
 
 
@@ -67,11 +224,14 @@ class ProcessedTransaction(Base):
         Index("ix_processed_daraja_id", "daraja_trans_id"),
         Index("ix_processed_scope", "tenant_id", "provider_account_id"),
         Index("ix_processed_received_at", "received_at"),
+        CheckConstraint("tenant_id IS NOT NULL AND tenant_id <> ''", name="ck_processed_tenant_id_nonempty"),
+        CheckConstraint("status IN ('received', 'validated', 'stored', 'failed')", name="ck_processed_status"),
+        CheckConstraint("reconciliation_status IN ('pending', 'processing', 'completed', 'failed')", name="ck_processed_reconciliation_status"),
     )
 
     id = Column(String, primary_key=True)
     daraja_trans_id = Column(String, nullable=False)
-    tenant_id = Column(String, nullable=False, default="default", server_default="default")
+    tenant_id = Column(String, nullable=False)
     provider_account_id = Column(String, nullable=False, default="legacy-default", server_default="legacy-default")
     status = Column(String, nullable=False, default="received")  # received, validated, stored, failed
     processing_time_ms = Column(Integer, nullable=True)
@@ -87,6 +247,30 @@ class ProcessedTransaction(Base):
     reconciliation_error = Column(Text, nullable=True)
 
 
+class FraudRiskAssessment(Base):
+    """Explainable fraud decision persisted independently from reconciliation state."""
+
+    __tablename__ = "fraud_risk_assessments"
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "transaction_id", name="uq_fraud_risk_tenant_transaction"),
+        Index("ix_fraud_risk_tenant_level", "tenant_id", "risk_level", "created_at"),
+        CheckConstraint("risk_score >= 0 AND risk_score <= 1", name="ck_fraud_risk_score_range"),
+        CheckConstraint("risk_level IN ('LOW', 'MEDIUM', 'HIGH', 'CRITICAL')", name="ck_fraud_risk_level"),
+    )
+
+    id = Column(String, primary_key=True, default=lambda: f"fraud_{uuid.uuid4().hex}")
+    tenant_id = Column(String, nullable=False)
+    transaction_id = Column(String, nullable=False)
+    risk_score = Column(Numeric(6, 4), nullable=False)
+    risk_level = Column(String(16), nullable=False)
+    action = Column(String(16), nullable=False)
+    reason_codes = Column(JSON, nullable=False, default=list, server_default="[]")
+    model_version = Column(String(64), nullable=False)
+    rules_triggered = Column(JSON, nullable=False, default=list, server_default="[]")
+    features = Column(JSON, nullable=False, default=dict, server_default="{}")
+    created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), nullable=False)
+
+
 class TransactionOutbox(Base):
     """Durable downstream publication intent for an accepted transaction."""
 
@@ -95,6 +279,7 @@ class TransactionOutbox(Base):
         UniqueConstraint("tenant_id", "event_key", name="uq_transaction_outbox_tenant_event"),
         Index("ix_transaction_outbox_pending", "status", "available_at", "created_at"),
         Index("ix_transaction_outbox_tenant_created", "tenant_id", "created_at"),
+        CheckConstraint("tenant_id IS NOT NULL AND tenant_id <> ''", name="ck_transaction_outbox_tenant_id_nonempty"),
     )
 
     id = Column(String, primary_key=True)
@@ -118,6 +303,7 @@ class ReconciliationOutbox(Base):
     __table_args__ = (
         UniqueConstraint("tenant_id", "event_key", name="uq_reconciliation_outbox_tenant_event"),
         Index("ix_reconciliation_outbox_pending", "status", "available_at", "created_at"),
+        CheckConstraint("tenant_id IS NOT NULL AND tenant_id <> ''", name="ck_reconciliation_outbox_tenant_id_nonempty"),
     )
 
     id = Column(String, primary_key=True)
@@ -144,6 +330,9 @@ class Discrepancy(Base):
         Index("ix_discrepancy_tenant_id", "tenant_id"),
         Index("ix_discrepancy_detected_at", "detected_at"),
         Index("ix_discrepancy_status_resolved", "status", "resolved"),
+        CheckConstraint("tenant_id IS NOT NULL AND tenant_id <> ''", name="ck_discrepancy_tenant_id_nonempty"),
+        CheckConstraint("status IN ('needs_review', 'reviewed', 'resolved', 'escalated')", name="ck_discrepancy_status"),
+        CheckConstraint("severity IN ('info', 'warning', 'critical')", name="ck_discrepancy_severity"),
     )
 
     id = Column(String, primary_key=True)  # Format: f"{trans_id}-{anomaly_type}"
@@ -163,6 +352,29 @@ class Discrepancy(Base):
     timeline = Column(JSON, nullable=True, default=list)
 
 
+class DiscrepancyEvent(Base):
+    """Append-only discrepancy lifecycle event history."""
+
+    __tablename__ = "discrepancy_events"
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "event_key", name="uq_discrepancy_events_tenant_key"),
+        Index("ix_discrepancy_events_scope", "tenant_id", "discrepancy_id", "created_at"),
+        CheckConstraint("tenant_id IS NOT NULL AND tenant_id <> ''", name="ck_discrepancy_events_tenant_id_nonempty"),
+    )
+
+    id = Column(String, primary_key=True)
+    tenant_id = Column(String, nullable=False)
+    discrepancy_id = Column(String, nullable=False)
+    event_key = Column(String, nullable=False)
+    from_state = Column(String, nullable=True)
+    to_state = Column(String, nullable=False)
+    actor = Column(String, nullable=False)
+    reason = Column(Text, nullable=True)
+    correlation_id = Column(String, nullable=True)
+    details = Column(JSON, nullable=False, default=dict, server_default="{}")
+    created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), nullable=False)
+
+
 class InternalRecord(Base):
     """Customer internal ledger or order system record baseline for comparison."""
 
@@ -171,6 +383,7 @@ class InternalRecord(Base):
         Index("ix_internal_records_tenant_phone", "tenant_id", "phone_number"),
         Index("ix_internal_records_phone", "phone_number"),
         Index("ix_internal_records_synced", "synced_at"),
+        CheckConstraint("tenant_id IS NOT NULL AND tenant_id <> ''", name="ck_internal_records_tenant_id_nonempty"),
     )
 
     internal_ref = Column(String, primary_key=True)
@@ -187,6 +400,7 @@ class WebhookConfig(Base):
     __tablename__ = "webhook_configs"
     __table_args__ = (
         Index("ix_webhook_configs_tenant", "tenant_id"),
+        CheckConstraint("tenant_id IS NOT NULL AND tenant_id <> ''", name="ck_webhook_configs_tenant_id_nonempty"),
     )
 
     id = Column(String, primary_key=True)
@@ -212,10 +426,13 @@ class WebhookDelivery(Base):
     __tablename__ = "webhook_deliveries"
     __table_args__ = (
         Index("ix_webhook_deliveries_webhook_id", "webhook_id"),
+        Index("ix_webhook_deliveries_tenant_webhook", "tenant_id", "webhook_id"),
         Index("ix_webhook_deliveries_created_at", "created_at"),
+        CheckConstraint("tenant_id IS NOT NULL AND tenant_id <> ''", name="ck_webhook_deliveries_tenant_id_nonempty"),
     )
 
     id = Column(String, primary_key=True)
+    tenant_id = Column(String, nullable=False, default="default", server_default="default")
     webhook_id = Column(String, nullable=False)
     event_type = Column(String, nullable=False)
     payload = Column(JSON, nullable=False)
@@ -233,6 +450,7 @@ class EscalationRule(Base):
     __tablename__ = "escalation_rules"
     __table_args__ = (
         Index("ix_escalation_rules_tenant", "tenant_id", "priority"),
+        CheckConstraint("tenant_id IS NOT NULL AND tenant_id <> ''", name="ck_escalation_rules_tenant_id_nonempty"),
     )
 
     id = Column(String, primary_key=True)
@@ -256,6 +474,7 @@ class OnCallRotation(Base):
     __tablename__ = "on_call_rotations"
     __table_args__ = (
         Index("ix_on_call_tenant_shift", "tenant_id", "shift_start", "shift_end"),
+        CheckConstraint("tenant_id IS NOT NULL AND tenant_id <> ''", name="ck_on_call_rotations_tenant_id_nonempty"),
     )
 
     id = Column(String, primary_key=True)
@@ -277,6 +496,7 @@ class EmailNotification(Base):
     __tablename__ = "email_notifications"
     __table_args__ = (
         Index("ix_email_tenant_created", "tenant_id", "created_at"),
+        CheckConstraint("tenant_id IS NOT NULL AND tenant_id <> ''", name="ck_email_notifications_tenant_id_nonempty"),
     )
 
     id = Column(String, primary_key=True)
@@ -298,10 +518,11 @@ class DeadLetter(Base):
     __table_args__ = (
         Index("ix_dead_letters_tenant", "tenant_id"),
         Index("ix_dead_letters_created", "created_at"),
+        CheckConstraint("tenant_id IS NOT NULL AND tenant_id <> ''", name="ck_dead_letters_tenant_id_nonempty"),
     )
 
     id = Column(String, primary_key=True)
-    tenant_id = Column(String, nullable=True, default="default")
+    tenant_id = Column(String, nullable=False, default="default", server_default="default")
     reason = Column(String, nullable=False)
     payload = Column(JSON, nullable=True)
     error_detail = Column(Text, nullable=True)
@@ -325,6 +546,7 @@ class Report(Base):
     __table_args__ = (
         Index("ix_reports_tenant_type", "tenant_id", "report_type"),
         Index("ix_reports_created", "created_at"),
+        CheckConstraint("tenant_id IS NOT NULL AND tenant_id <> ''", name="ck_reports_tenant_id_nonempty"),
     )
 
     id = Column(String, primary_key=True)
@@ -342,6 +564,9 @@ class UserAccount(Base):
     """Local account record provisioned from an external IdP or internal directory."""
 
     __tablename__ = "user_accounts"
+    __table_args__ = (
+        CheckConstraint("tenant_id IS NOT NULL AND tenant_id <> ''", name="ck_user_accounts_tenant_id_nonempty"),
+    )
 
     id = Column(String, primary_key=True)
     tenant_id = Column(String, nullable=False, default="default")
@@ -366,6 +591,7 @@ class Organization(Base):
     __table_args__ = (
         Index("ix_organizations_tenant_slug", "tenant_id", "slug", unique=True),
         Index("ix_organizations_tenant_id", "tenant_id"),
+        CheckConstraint("tenant_id IS NOT NULL AND tenant_id <> ''", name="ck_organizations_tenant_id_nonempty"),
     )
 
     id = Column(String, primary_key=True)
@@ -386,6 +612,7 @@ class Team(Base):
     __table_args__ = (
         Index("ix_teams_organization_tenant", "organization_id", "tenant_id"),
         Index("ix_teams_slug", "tenant_id", "slug", unique=False),
+        CheckConstraint("tenant_id IS NOT NULL AND tenant_id <> ''", name="ck_teams_tenant_id_nonempty"),
     )
 
     id = Column(String, primary_key=True)
@@ -404,6 +631,7 @@ class Department(Base):
     __table_args__ = (
         Index("ix_departments_organization_tenant", "organization_id", "tenant_id"),
         Index("ix_departments_team", "team_id"),
+        CheckConstraint("tenant_id IS NOT NULL AND tenant_id <> ''", name="ck_departments_tenant_id_nonempty"),
     )
 
     id = Column(String, primary_key=True)
@@ -423,6 +651,7 @@ class OrganizationMembership(Base):
     __table_args__ = (
         Index("ix_org_membership_user_tenant", "tenant_id", "user_id"),
         Index("ix_org_membership_org", "organization_id"),
+        CheckConstraint("tenant_id IS NOT NULL AND tenant_id <> ''", name="ck_organization_memberships_tenant_id_nonempty"),
     )
 
     id = Column(String, primary_key=True)
@@ -442,6 +671,7 @@ class OrganizationApproval(Base):
     __tablename__ = "organization_approvals"
     __table_args__ = (
         Index("ix_org_approval_tenant", "tenant_id", "status"),
+        CheckConstraint("tenant_id IS NOT NULL AND tenant_id <> ''", name="ck_organization_approvals_tenant_id_nonempty"),
     )
 
     id = Column(String, primary_key=True)
@@ -463,6 +693,7 @@ class TenantConfiguration(Base):
     __tablename__ = "tenant_configurations"
     __table_args__ = (
         Index("ix_tenant_config_unique", "tenant_id", unique=True),
+        CheckConstraint("tenant_id IS NOT NULL AND tenant_id <> ''", name="ck_tenant_configurations_tenant_id_nonempty"),
     )
 
     id = Column(String, primary_key=True)
@@ -479,6 +710,7 @@ class TenantLimit(Base):
     __tablename__ = "tenant_limits"
     __table_args__ = (
         Index("ix_tenant_limits_tenant_metric", "tenant_id", "organization_id", "metric_name", "period", unique=True),
+        CheckConstraint("tenant_id IS NOT NULL AND tenant_id <> ''", name="ck_tenant_limits_tenant_id_nonempty"),
     )
 
     id = Column(String, primary_key=True)
@@ -490,12 +722,89 @@ class TenantLimit(Base):
     created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), nullable=False)
 
 
+class TransactionProvenance(Base):
+    """Provenance + data-quality snapshot for one transaction lifecycle.
+
+    This is the Phase 9 exit-gate anchor: it answers where data originated,
+    what changed it, which service processed it, which version processed it,
+    and what the final decision was. The table is append-only once finalized.
+    """
+
+    __tablename__ = "transaction_provenances"
+    __table_args__ = (
+        Index("ix_prov_tenant_final", "tenant_id", "final_decision"),
+        Index("ix_prov_tenant_created", "tenant_id", "created_at"),
+        CheckConstraint("tenant_id IS NOT NULL AND tenant_id <> ''", name="ck_prov_tenant_id_nonempty"),
+    )
+
+    id = Column(String, primary_key=True, default=lambda: f"prov_{uuid.uuid4().hex}")
+    tenant_id = Column(String, nullable=False)
+    transaction_id = Column(String, nullable=False)
+    provider_id = Column(String, nullable=False)
+    lineage_id = Column(String, nullable=False)
+    event_id = Column(String, nullable=False)
+    schema_version = Column(String(64), nullable=False, default="1.0")
+    pipeline_version = Column(String(64), nullable=False, default="1.0")
+    raw_payload_sha256 = Column(String(64), nullable=False)
+    provider_payload_sha256 = Column(String(64), nullable=True)
+    provider_source_ip = Column(String, nullable=True)
+    provider_signature_verified = Column(Boolean, nullable=False, default=False)
+    normalized_payload_sha256 = Column(String(64), nullable=True)
+    normalized_at = Column(DateTime(timezone=True), nullable=True)
+    fraud_decision = Column(String, nullable=True)
+    fraud_checked_at = Column(DateTime(timezone=True), nullable=True)
+    reconciliation_decision = Column(String, nullable=True)
+    reconciliation_checked_at = Column(DateTime(timezone=True), nullable=True)
+    final_decision = Column(String, nullable=True)
+    dq_status = Column(String(16), nullable=False, default="pass")
+    dq_completeness = Column(Numeric(5, 4), nullable=False, default=1.0)
+    dq_validity = Column(Numeric(5, 4), nullable=False, default=1.0)
+    dq_accuracy = Column(Numeric(5, 4), nullable=False, default=1.0)
+    dq_timeliness = Column(Numeric(5, 4), nullable=False, default=1.0)
+    dq_consistency = Column(Numeric(5, 4), nullable=False, default=1.0)
+    dq_uniqueness = Column(Numeric(5, 4), nullable=False, default=1.0)
+    dq_failures = Column(JSON, nullable=False, default=list)
+    dq_warnings = Column(JSON, nullable=False, default=list)
+    dq_checked_at = Column(DateTime(timezone=True), nullable=False)
+    lineage_snapshot = Column(JSON, nullable=False, default=list)
+    created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), nullable=False)
+    finalized_at = Column(DateTime(timezone=True), nullable=True)
+
+
+class QuarantineRecord(Base):
+    """Quarantined payload that failed one or more data-quality checks.
+
+    Quarantine is the safe destination for bad records. Nothing from quarantine
+    automatically contaminates production transaction datasets.
+    """
+
+    __tablename__ = "quarantine_records"
+    __table_args__ = (
+        Index("ix_quarantine_tenant_reason", "tenant_id", "reason"),
+        CheckConstraint("tenant_id IS NOT NULL AND tenant_id <> ''", name="ck_quarantine_tenant_id_nonempty"),
+    )
+
+    id = Column(String, primary_key=True, default=lambda: f"q_{uuid.uuid4().hex}")
+    tenant_id = Column(String, nullable=False)
+    transaction_id = Column(String, nullable=True)
+    provider_id = Column(String, nullable=False)
+    lineage_id = Column(String, nullable=True)
+    reason = Column(String, nullable=False)
+    failure_rule = Column(String, nullable=True)
+    payload = Column(JSON, nullable=False)
+    payload_sha256 = Column(String(64), nullable=False)
+    rejection_context = Column(JSON, nullable=True)
+    source_ip = Column(String, nullable=True)
+    created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), nullable=False)
+
+
 class TenantUsage(Base):
     """Usage tracking for tenant and organization resource consumption."""
 
     __tablename__ = "tenant_usage"
     __table_args__ = (
         Index("ix_tenant_usage_tenant_metric", "tenant_id", "organization_id", "metric_name", "period", unique=True),
+        CheckConstraint("tenant_id IS NOT NULL AND tenant_id <> ''", name="ck_tenant_usage_tenant_id_nonempty"),
     )
 
     id = Column(String, primary_key=True)
@@ -511,6 +820,9 @@ class UserSession(Base):
     """Authenticated session record for device and session risk evaluation."""
 
     __tablename__ = "user_sessions"
+    __table_args__ = (
+        CheckConstraint("tenant_id IS NOT NULL AND tenant_id <> ''", name="ck_user_sessions_tenant_id_nonempty"),
+    )
 
     id = Column(String, primary_key=True)
     tenant_id = Column(String, nullable=False, default="default")
@@ -528,6 +840,9 @@ class OIDCProvider(Base):
     """Tenant-managed external OIDC identity provider configuration."""
 
     __tablename__ = "oidc_providers"
+    __table_args__ = (
+        CheckConstraint("tenant_id IS NOT NULL AND tenant_id <> ''", name="ck_oidc_providers_tenant_id_nonempty"),
+    )
 
     id = Column(String, primary_key=True)
     tenant_id = Column(String, nullable=False, default="default")
@@ -553,6 +868,9 @@ class PaymentProvider(Base):
     """Tenant-scoped payment provider registration and operational configuration."""
 
     __tablename__ = "payment_providers"
+    __table_args__ = (
+        CheckConstraint("tenant_id IS NOT NULL AND tenant_id <> ''", name="ck_payment_providers_tenant_id_nonempty"),
+    )
 
     id = Column(String, primary_key=True)
     tenant_id = Column(String, nullable=False, default="default", index=True)
@@ -578,6 +896,9 @@ class ApiKeyRecord(Base):
     """Tenant-scoped API keys issued for machine access."""
 
     __tablename__ = "api_key_records"
+    __table_args__ = (
+        CheckConstraint("tenant_id IS NOT NULL AND tenant_id <> ''", name="ck_api_key_records_tenant_id_nonempty"),
+    )
 
     id = Column(String, primary_key=True)
     tenant_id = Column(String, nullable=False, default="default")
@@ -598,6 +919,9 @@ class MFAChallenge(Base):
     """MFA challenge state for end-user verification flows."""
 
     __tablename__ = "mfa_challenges"
+    __table_args__ = (
+        CheckConstraint("tenant_id IS NOT NULL AND tenant_id <> ''", name="ck_mfa_challenges_tenant_id_nonempty"),
+    )
 
     id = Column(String, primary_key=True)
     user_id = Column(String, nullable=False)
@@ -613,6 +937,9 @@ class PasswordlessChallenge(Base):
     """Passwordless challenge state for email or magic-link verification."""
 
     __tablename__ = "passwordless_challenges"
+    __table_args__ = (
+        CheckConstraint("tenant_id IS NOT NULL AND tenant_id <> ''", name="ck_passwordless_challenges_tenant_id_nonempty"),
+    )
 
     id = Column(String, primary_key=True)
     user_id = Column(String, nullable=False)

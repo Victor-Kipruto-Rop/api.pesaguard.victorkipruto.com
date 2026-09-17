@@ -22,6 +22,11 @@ TOPIC_AUDIT_EVENTS = os.getenv("PESAGUARD_TOPIC_AUDIT_EVENTS", "mpesa.audit.even
 TOPIC_NOTIFICATION_EVENTS = os.getenv("PESAGUARD_TOPIC_NOTIFICATION_EVENTS", "notification.events")
 TOPIC_NOTIFICATION_STATUS = os.getenv("PESAGUARD_TOPIC_NOTIFICATION_STATUS", "notification.status")
 TOPIC_COMMUNICATION_AUDIT = os.getenv("PESAGUARD_TOPIC_COMMUNICATION_AUDIT", "communication.audit")
+TOPIC_TRANSACTION_RECEIVED = os.getenv("PESAGUARD_TOPIC_TRANSACTION_RECEIVED", TOPIC_TRANSACTIONS_RAW)
+TOPIC_TRANSACTION_VALIDATED = os.getenv("PESAGUARD_TOPIC_TRANSACTION_VALIDATED", "mpesa.transactions.validated")
+TOPIC_TRANSACTION_RECONCILED = os.getenv("PESAGUARD_TOPIC_TRANSACTION_RECONCILED", TOPIC_TRANSACTIONS_MATCHED)
+TOPIC_TRANSACTION_EXCEPTION = os.getenv("PESAGUARD_TOPIC_TRANSACTION_EXCEPTION", TOPIC_DISCREPANCIES)
+TOPIC_TRANSACTION_FRAUD = os.getenv("PESAGUARD_TOPIC_TRANSACTION_FRAUD", "mpesa.transactions.fraud")
 
 # Legacy compatibility aliases
 TRANSACTIONS_RAW = TOPIC_TRANSACTIONS_RAW
@@ -37,7 +42,18 @@ ALL_TOPICS: List[str] = [
     TOPIC_NOTIFICATION_EVENTS,
     TOPIC_NOTIFICATION_STATUS,
     TOPIC_COMMUNICATION_AUDIT,
+    TOPIC_TRANSACTION_VALIDATED,
+    TOPIC_TRANSACTION_FRAUD,
 ]
+
+EVENT_TYPE_TOPICS = {
+    "transaction.received": TOPIC_TRANSACTION_RECEIVED,
+    "transaction.validated": TOPIC_TRANSACTION_VALIDATED,
+    "transaction.reconciled": TOPIC_TRANSACTION_RECONCILED,
+    "transaction.exception_created": TOPIC_TRANSACTION_EXCEPTION,
+    "transaction.fraud_detected": TOPIC_TRANSACTION_FRAUD,
+    "notification.requested": TOPIC_NOTIFICATION_EVENTS,
+}
 
 # Production Topic Provisioning Specifications
 # Production deployments should set KAFKA_REPLICATION_FACTOR explicitly (normally 2+).
@@ -61,6 +77,11 @@ TOPIC_SPECIFICATIONS: Dict[str, Dict[str, Any]] = {
             "cleanup.policy": "delete",
         },
     },
+    TOPIC_TRANSACTION_VALIDATED: {
+        "num_partitions": int(os.getenv("KAFKA_PARTITIONS_VALIDATED", "6")),
+        "replication_factor": KAFKA_REPLICATION_FACTOR,
+        "configs": {"retention.ms": "604800000", "cleanup.policy": "delete"},
+    },
     TOPIC_DISCREPANCIES: {
         "num_partitions": int(os.getenv("KAFKA_PARTITIONS_DISCREPANCIES", "3")),
         "replication_factor": KAFKA_REPLICATION_FACTOR,
@@ -68,6 +89,11 @@ TOPIC_SPECIFICATIONS: Dict[str, Dict[str, Any]] = {
             "retention.ms": "7776000000",  # 90 Days retention
             "cleanup.policy": "delete",
         },
+    },
+    TOPIC_TRANSACTION_FRAUD: {
+        "num_partitions": int(os.getenv("KAFKA_PARTITIONS_FRAUD", "3")),
+        "replication_factor": KAFKA_REPLICATION_FACTOR,
+        "configs": {"retention.ms": "2592000000", "cleanup.policy": "delete"},
     },
     TOPIC_DEAD_LETTERS: {
         "num_partitions": 3,

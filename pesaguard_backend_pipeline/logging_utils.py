@@ -19,6 +19,8 @@ from typing import Any, Dict, Generator, Optional
 
 # ContextVar for end-to-end distributed request and transaction correlation tracing
 _correlation_id: ContextVar[str] = ContextVar("correlation_id", default="")
+_observability_context: ContextVar[Dict[str, str]] = ContextVar("observability_context", default={})
+OBSERVABILITY_FIELDS = ("request_id", "correlation_id", "transaction_id", "event_id", "trace_id", "span_id", "traceparent", "tenant_id")
 
 # Standard LogRecord attributes to exclude from custom extra key extraction
 _RESERVED_RECORD_ATTRS = {
@@ -39,6 +41,9 @@ class JsonFormatter(logging.Formatter):
 
         timestamp = datetime.fromtimestamp(record.created, tz=timezone.utc).isoformat()
 
+        context = dict(_observability_context.get())
+        if cid:
+            context.setdefault("correlation_id", cid)
         payload: Dict[str, Any] = {
             "ts": timestamp,
             "level": record.levelname,
@@ -46,6 +51,9 @@ class JsonFormatter(logging.Formatter):
             "correlation_id": cid,
             "message": record.getMessage(),
         }
+        for key in OBSERVABILITY_FIELDS:
+            if context.get(key):
+                payload[key] = context[key]
 
         # Include exception tracebacks if present
         if record.exc_info:
@@ -88,6 +96,23 @@ def set_correlation_id(correlation_id: str) -> Token[str]:
     return _correlation_id.set(cid)
 
 
+def bind_observability_context(**fields: Optional[str]) -> Dict[str, str]:
+    """Merge traceability identifiers into the current execution context."""
+    current = dict(_observability_context.get())
+    for key in OBSERVABILITY_FIELDS:
+        value = fields.get(key)
+        if value:
+            current[key] = str(value)
+    if current.get("correlation_id"):
+        _correlation_id.set(current["correlation_id"])
+    _observability_context.set(current)
+    return current
+
+
+def get_observability_context() -> Dict[str, str]:
+    return dict(_observability_context.get())
+
+
 def get_correlation_id() -> str:
     """Retrieve the current correlation ID, generating a fresh one if unassigned."""
     cid = _correlation_id.get()
@@ -112,3 +137,11 @@ def correlation_context(correlation_id: Optional[str] = None) -> Generator[str, 
         yield cid
     finally:
         _correlation_id.reset(token)
+
+def set_span_id(span_id: Optional[str] = None) -> str:
+    """Capture or replace the current span identity in the observability context."""
+    if not span_id:
+        span_id = uuid.uuid4().hex
+    bind_observability_context(span_id=span_id)
+    return span_id
+

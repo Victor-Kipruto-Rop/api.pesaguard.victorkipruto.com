@@ -251,6 +251,11 @@ def _session_factory() -> Session:
     from sqlalchemy.orm import sessionmaker
 
     engine = create_engine(os.getenv("DATABASE_URL", "postgresql://pesaguard:pesaguard@localhost:5432/pesaguard"), pool_pre_ping=True)
+    try:
+        from metrics import instrument_engine_query_timing
+        instrument_engine_query_timing(engine)
+    except Exception:
+        logger.debug("Communications worker engine query timing instrumentation skipped.", exc_info=True)
     return sessionmaker(bind=engine, expire_on_commit=False)()
 
 
