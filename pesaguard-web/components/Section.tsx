@@ -1,1 +1,0 @@
-export function Section({ title, children }: { title?: string; children?: React.ReactNode }) { return <section className="section"><div className="container">{title && <h2>{title}</h2>}{children}</div></section>; }

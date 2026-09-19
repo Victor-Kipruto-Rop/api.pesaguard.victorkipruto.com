@@ -1,1 +1,0 @@
-export function ServiceStatus({ live = false }: { live?: boolean }) { return <div className="status-card"><span className="status-dot" /><div><strong>{live ? "All systems operational" : "Operational snapshot"}</strong><p>Core API · Data processing · Dashboard</p></div><span className="status-label">Operational</span></div>; }

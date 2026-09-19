@@ -1,2 +1,0 @@
-import { ContactForm } from "@/components/contact/ContactForm";
-export default function Contact(){return <section className="section"><div className="container split"><div><p className="eyebrow">Contact PesaGuard</p><h1>Let&apos;s talk about the work behind your payments.</h1><p className="lede">Tell us what your team is solving. We will bring the right conversation.</p></div><ContactForm/></div></section>}
