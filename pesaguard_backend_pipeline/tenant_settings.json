@@ -1,0 +1,35 @@
+{
+  "default": {
+    "alert_channels": [
+      "slack"
+    ],
+    "thresholds": {
+      "warning": 1000,
+      "critical": 5000
+    },
+    "preferred_locale": "en",
+    "deployment_region": "ke-1",
+    "backup_region": "ke-1",
+    "log_region": "ke-1",
+    "cross_border_transfer_allowed": false
+  },
+  "tenant-a": {
+    "alert_channels": [
+      "slack"
+    ],
+    "thresholds": {
+      "warning": 1000,
+      "critical": 5000
+    },
+    "preferred_locale": "sw",
+    "user_locale_overrides": {
+      "user-2": "en"
+    },
+    "deployment_region": "ke-1",
+    "backup_region": "ke-1",
+    "log_region": "ke-1",
+    "cross_border_transfer_allowed": false,
+    "key": "value",
+    "tenant_id": "tenant-a"
+  }
+}

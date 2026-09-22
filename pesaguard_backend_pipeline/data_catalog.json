@@ -1,0 +1,96 @@
+{
+  "version": "1.0",
+  "datasets": [
+    {
+      "name": "transactions",
+      "description": "Canonical tenant-scoped financial transactions and lifecycle state.",
+      "owner": "Finance and Reconciliation",
+      "schema": {"transaction_id": "string", "tenant_id": "string", "provider": "string", "amount": "decimal", "currency": "string", "status": "string", "transaction_time": "timestamp"},
+      "source": "Provider adapters, API ingestion, batch imports",
+      "sensitivity": "Restricted financial and personal data",
+      "retention": "transactions",
+      "refresh_frequency": "Real time",
+      "quality_score": 1.0,
+      "lineage": "provider_event -> raw -> validated -> normalized -> enriched -> processed",
+      "consumers": ["reconciliation", "fraud", "dashboard", "reports", "analytics"]
+    },
+    {
+      "name": "reconciliation_results",
+      "description": "Explainable matching decisions and reconciliation evidence.",
+      "owner": "Reconciliation",
+      "schema": {"transaction_id": "string", "status": "enum", "match_score": "decimal", "engine_version": "string", "created_at": "timestamp"},
+      "source": "Reconciliation workers",
+      "sensitivity": "Restricted financial operations data",
+      "retention": "transactions",
+      "refresh_frequency": "Near real time",
+      "quality_score": null,
+      "lineage": "normalized_transaction -> reconciliation_engine",
+      "consumers": ["dashboard", "alerts", "reports", "audit"]
+    },
+    {
+      "name": "anomalies",
+      "description": "Fraud, anomaly, discrepancy, and investigation signals.",
+      "owner": "Risk and Fraud",
+      "schema": {"transaction_id": "string", "risk_level": "enum", "risk_score": "decimal", "reason_codes": "array", "created_at": "timestamp"},
+      "source": "Fraud and anomaly workers",
+      "sensitivity": "Restricted risk data",
+      "retention": "transactions",
+      "refresh_frequency": "Near real time",
+      "quality_score": null,
+      "lineage": "enriched_transaction -> fraud_engine",
+      "consumers": ["alerts", "case management", "dashboard", "audit"]
+    },
+    {
+      "name": "merchants",
+      "description": "Merchant identity, account, configuration, and operational context.",
+      "owner": "Tenant Operations",
+      "schema": {"merchant_id": "string", "tenant_id": "string", "status": "string", "metadata": "object"},
+      "source": "Tenant configuration and provider accounts",
+      "sensitivity": "Tenant confidential",
+      "retention": "user_data",
+      "refresh_frequency": "On change",
+      "quality_score": null,
+      "lineage": "tenant_configuration -> merchant_context",
+      "consumers": ["enrichment", "dashboard", "reports"]
+    },
+    {
+      "name": "customers",
+      "description": "Customer references used for enrichment and operational support.",
+      "owner": "Tenant Operations",
+      "schema": {"customer_id": "string", "tenant_id": "string", "phone_token": "string", "segment": "string"},
+      "source": "Tenant systems and provider references",
+      "sensitivity": "Restricted personal data",
+      "retention": "user_data",
+      "refresh_frequency": "On change or lookup",
+      "quality_score": null,
+      "lineage": "tenant_source -> customer_context",
+      "consumers": ["enrichment", "fraud", "support"]
+    },
+    {
+      "name": "audit_events",
+      "description": "Append-only evidence of financial, security, and administrative actions.",
+      "owner": "Compliance and Security",
+      "schema": {"event_id": "string", "tenant_id": "string", "event_type": "string", "actor": "string", "created_at": "timestamp"},
+      "source": "Application actions and event consumers",
+      "sensitivity": "Highly restricted audit data",
+      "retention": "audit",
+      "refresh_frequency": "Real time",
+      "quality_score": 1.0,
+      "lineage": "application_event -> audit_event",
+      "consumers": ["compliance", "security", "investigation"]
+    },
+    {
+      "name": "provider_events",
+      "description": "Immutable raw provider envelopes retained for replay and transformation lineage.",
+      "owner": "Data Platform",
+      "schema": {"event_id": "string", "source": "string", "source_event_id": "string", "payload": "object", "ingestion_time": "timestamp"},
+      "source": "M-Pesa, Airtel, banks, POS, files, external APIs",
+      "sensitivity": "Restricted raw financial and personal data",
+      "retention": "raw_provider_data",
+      "refresh_frequency": "Real time and batch",
+      "quality_score": null,
+      "lineage": "provider -> connector -> raw object/event",
+      "consumers": ["validation", "replay", "data quality", "audit"]
+    }
+  ]
+}

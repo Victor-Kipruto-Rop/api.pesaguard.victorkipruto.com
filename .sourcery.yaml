@@ -1,0 +1,16 @@
+rule_settings:
+  enable:
+    - default
+
+metrics:
+  quality_threshold: 80
+
+ignore:
+  - migrations/*
+  - generated/*
+  - static/*
+  - tests/fixtures/*
+
+refactor:
+  skip:
+    - avoid-global-variables

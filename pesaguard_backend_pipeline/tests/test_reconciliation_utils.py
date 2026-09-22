@@ -1,0 +1,49 @@
+import sys
+import os
+import importlib
+from datetime import datetime, timedelta
+
+# Ensure repo root is on sys.path so we can import sibling modules
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+
+from reconciliation_utils import normalize_daraja_event, exact_match, time_window_match
+validator = importlib.import_module('shared.daraja.validator')
+compute_hmac = validator.compute_hmac
+validate_signature = validator.validate_signature
+
+
+def test_normalize_daraja_flat_c2b():
+    payload = {
+        "TransID": "ABC123",
+        "TransAmount": "150.00",
+        "TransTime": "20240101123045",
+        "MSISDN": "254700000001",
+    }
+    n = normalize_daraja_event(payload)
+    assert n["TransID"] == "ABC123"
+    assert n["TransAmount"] == 150.0
+    assert ("timestamp" in n) or ("TransTime" in n)
+
+
+def test_exact_match_by_reference_and_amount():
+    tx = {"TransID": "REF-1", "TransAmount": "100.00"}
+    s = {"reference": "REF-1", "amount": 100}
+    assert exact_match(tx, s)
+
+
+def test_time_window_match_by_ref_and_time():
+    now = datetime.utcnow()
+    tx = {"TransID": "R1", "TransTime": now.strftime("%Y%m%d%H%M%S"), "TransAmount": "10"}
+    settlements = [
+        {"TransID": "R1", "TransTime": (now + timedelta(seconds=10)).strftime("%Y%m%d%H%M%S"), "TransAmount": 10},
+        {"TransID": "R2", "TransTime": now.strftime("%Y%m%d%H%M%S"), "TransAmount": 5},
+    ]
+    matched = time_window_match(tx, settlements, window_seconds=60)
+    assert matched is not None and (matched.get("TransID") == "R1" or matched.get("reference") == "R1")
+
+
+def test_validate_signature_hex():
+    payload = b'{"key":"value"}'
+    secret = "s3cr3t"
+    digest = compute_hmac(payload, secret, algo="sha256").hex()
+    assert validate_signature(digest, payload, secret, algo="sha256", signature_encoding="hex")

@@ -1,0 +1,5 @@
+internal_ref: internal_ref
+amount: amount
+phone_number: phone_number
+timestamp: created_at
+status: status

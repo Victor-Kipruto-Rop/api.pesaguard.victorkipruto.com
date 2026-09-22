@@ -1,0 +1,25 @@
+# Streaming & Event Ingestion
+# NOTE: kafka-python-ng is the active, community-maintained drop-in replacement 
+# for kafka-python, which is unmaintained and broken on modern Python runtimes.
+kafka-python-ng==2.2.3
+
+# Database & ORM
+SQLAlchemy==2.0.38
+psycopg2-binary==2.9.10
+
+# Caching, Rate Limiting & Async Queue
+redis==5.3.1
+rq==2.1.0
+
+# Environment & Configuration
+python-dotenv==1.2.2
+
+# Core Web & Security Dependencies (Recommended for PesaGuard Services)
+Flask==3.1.3
+gunicorn==23.0.0
+PyJWT==2.13.0
+cryptography==46.0.5
+requests==2.33.0
+python-dateutil==2.9.0.post0
+prometheus-client==0.21.1
+sentry-sdk[flask]==2.19.2

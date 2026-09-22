@@ -1,0 +1,27 @@
+{
+  "version": "1.0",
+  "datasets": {
+    "transactions": [
+      {"field": "transaction_id", "type": "VARCHAR(255)", "nullable": false, "description": "Stable PesaGuard transaction identifier.", "currency": null, "constraints": ["unique within tenant", "non-empty"], "source": "PesaGuard canonical model", "pii": "NO", "used_by": ["Reconciliation", "Fraud detection", "Lineage", "Reporting"]},
+      {"field": "tenant_id", "type": "VARCHAR(128)", "nullable": false, "description": "Owning tenant boundary.", "currency": null, "constraints": ["non-empty", "principal-scoped"], "source": "Authenticated connector or principal", "pii": "NO", "used_by": ["All tenant-scoped queries"]},
+      {"field": "provider_transaction_id", "type": "VARCHAR(255)", "nullable": false, "description": "Original provider transaction reference.", "currency": null, "constraints": ["unique within tenant and provider"], "source": "Provider transaction", "pii": "NO", "used_by": ["Idempotency", "Reconciliation", "Audit"]},
+      {"field": "amount", "type": "DECIMAL(18,2)", "nullable": false, "description": "Monetary value of the transaction.", "currency": "Defined by currency column.", "constraints": ["amount > 0"], "source": "Provider transaction", "pii": "NO", "used_by": ["Reconciliation", "Fraud detection", "Reporting"]},
+      {"field": "currency", "type": "CHAR(3)", "nullable": false, "description": "ISO 4217 transaction currency.", "currency": "Self-describing ISO code.", "constraints": ["uppercase", "three alphabetic characters"], "source": "Provider transaction or configured default", "pii": "NO", "used_by": ["Amount interpretation", "Reporting"]},
+      {"field": "status", "type": "VARCHAR(32)", "nullable": false, "description": "Canonical transaction lifecycle status.", "currency": null, "constraints": ["controlled enum"], "source": "Validation and processing pipeline", "pii": "NO", "used_by": ["Reconciliation", "Dashboard", "Alerts"]},
+      {"field": "transaction_time", "type": "TIMESTAMP WITH TIME ZONE", "nullable": false, "description": "Provider transaction time normalized to UTC.", "currency": null, "constraints": ["UTC", "valid timestamp"], "source": "Provider transaction", "pii": "NO", "used_by": ["Partitioning", "Aggregation", "Reconciliation"]},
+      {"field": "phone_number", "type": "VARCHAR(32)", "nullable": false, "description": "Normalized payer phone reference.", "currency": null, "constraints": ["E.164 or tokenized value"], "source": "Provider transaction", "pii": "DIRECT PERSONAL DATA", "used_by": ["Customer enrichment", "Reconciliation", "Fraud detection"]},
+      {"field": "metadata", "type": "JSONB", "nullable": false, "description": "Provenance and non-core canonical attributes.", "currency": null, "constraints": ["valid JSON object", "no raw secrets"], "source": "Adapters and enrichment pipeline", "pii": "MAY CONTAIN PERSONAL DATA", "used_by": ["Lineage", "Fraud detection", "Investigation"]}
+    ],
+    "provider_events": [
+      {"field": "event_id", "type": "VARCHAR(255)", "nullable": false, "description": "PesaGuard event identity.", "currency": null, "constraints": ["unique within tenant and stage"], "source": "Event ingestion", "pii": "NO", "used_by": ["Replay", "Lineage", "Audit"]},
+      {"field": "source", "type": "VARCHAR(64)", "nullable": false, "description": "Provider or connector source name.", "currency": null, "constraints": ["registered connector"], "source": "Provider adapter", "pii": "NO", "used_by": ["Catalog", "Lineage", "Routing"]},
+      {"field": "source_event_id", "type": "VARCHAR(255)", "nullable": true, "description": "Original source event or provider callback identity.", "currency": null, "constraints": ["stable when supplied"], "source": "Provider event", "pii": "NO", "used_by": ["Idempotency", "Replay", "Lineage"]},
+      {"field": "payload", "type": "JSONB", "nullable": false, "description": "Immutable protected raw provider payload.", "currency": null, "constraints": ["immutable", "hash-linked"], "source": "Provider connector", "pii": "MAY CONTAIN PERSONAL DATA", "used_by": ["Validation", "Replay", "Investigation"]}
+    ],
+    "audit_events": [
+      {"field": "event_id", "type": "VARCHAR(255)", "nullable": false, "description": "Audit event identity.", "currency": null, "constraints": ["append-only"], "source": "Application action", "pii": "NO", "used_by": ["Compliance", "Security", "Investigation"]},
+      {"field": "actor", "type": "VARCHAR(128)", "nullable": false, "description": "Principal or service responsible for the action.", "currency": null, "constraints": ["non-empty"], "source": "Authenticated principal or worker", "pii": "MAY CONTAIN PERSONAL DATA", "used_by": ["Compliance", "Security"]},
+      {"field": "payload_hash", "type": "CHAR(64)", "nullable": false, "description": "Hash linking audit evidence to its protected details.", "currency": null, "constraints": ["SHA-256 hex"], "source": "Audit writer", "pii": "NO", "used_by": ["Integrity verification", "Compliance"]}
+    ]
+  }
+}

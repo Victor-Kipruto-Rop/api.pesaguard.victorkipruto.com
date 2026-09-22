@@ -1,0 +1,10 @@
+{
+  "email": {
+    "subject": "Shughuli ya malipo",
+    "body": "Shughuli ya malipo imegunduliwa",
+    "fallback": "Shughuli ya malipo imegunduliwa"
+  },
+  "errors": {
+    "missing_translation": "Kukosa tafsiri"
+  }
+}

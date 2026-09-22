@@ -1,0 +1,10 @@
+{
+  "email": {
+    "subject": "Payment activity",
+    "body": "Payment activity detected",
+    "fallback": "Payment activity detected"
+  },
+  "errors": {
+    "missing_translation": "Missing translation"
+  }
+}

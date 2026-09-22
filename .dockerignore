@@ -1,0 +1,12 @@
+# Never bake deployment configuration or repository history into images.
+.env
+.env.*
+**/.env
+**/.env.*
+.git
+**/.venv
+**/node_modules
+**/__pycache__
+**/.pytest_cache
+**/.next
+*.log

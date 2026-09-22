@@ -1,0 +1,69 @@
+{
+  "version": "1.0",
+  "approval_required": true,
+  "categories": {
+    "transactions": {
+      "data_type": "Transaction data",
+      "owner": "Finance and Reconciliation",
+      "purpose": "Financial reconciliation, dispute investigation, and settlement evidence",
+      "retention_days": 2555,
+      "storage": "PostgreSQL hot; object storage warm; cold archive after policy transition",
+      "access_level": "Tenant-scoped finance, reconciliation, and audit roles",
+      "deletion_method": "Archive first, then controlled tenant-scoped purge with legal-hold check"
+    },
+    "audit": {
+      "data_type": "Audit data",
+      "owner": "Compliance and Security",
+      "purpose": "Accountability, forensic investigation, and regulatory evidence",
+      "retention_days": 2555,
+      "storage": "PostgreSQL append-only store; immutable archive",
+      "access_level": "Compliance, security, and authorized auditors",
+      "deletion_method": "Policy-authorized purge only after archive verification and legal-hold check"
+    },
+    "application_logs": {
+      "data_type": "Application logs",
+      "owner": "Platform Operations",
+      "purpose": "Operational debugging and service reliability",
+      "retention_days": 90,
+      "storage": "Centralized log storage",
+      "access_level": "Platform operators with production-log access",
+      "deletion_method": "Automated lifecycle expiration after archive or export"
+    },
+    "security_logs": {
+      "data_type": "Security logs",
+      "owner": "Security",
+      "purpose": "Threat detection, incident response, and access accountability",
+      "retention_days": 730,
+      "storage": "Restricted security log store; immutable archive",
+      "access_level": "Security and compliance roles",
+      "deletion_method": "Controlled purge after incident and legal-hold review"
+    },
+    "raw_provider_data": {
+      "data_type": "Raw provider data",
+      "owner": "Data Platform",
+      "purpose": "Replay, transformation verification, dispute investigation, and lineage",
+      "retention_days": 2555,
+      "storage": "Object storage raw zone; cold archive",
+      "access_level": "Restricted data-platform and audit roles",
+      "deletion_method": "Archive integrity check followed by controlled object lifecycle deletion"
+    },
+    "analytics": {
+      "data_type": "Analytics data",
+      "owner": "Data and Finance Analytics",
+      "purpose": "Aggregations, dashboards, trend analysis, and reporting",
+      "retention_days": 1825,
+      "storage": "Curated object storage and derived metric tables",
+      "access_level": "Tenant-scoped analytics and reporting roles",
+      "deletion_method": "Rebuildable derived-data expiry after source retention review"
+    },
+    "user_data": {
+      "data_type": "User data",
+      "owner": "Tenant Administration",
+      "purpose": "Authentication, authorization, support, and account administration",
+      "retention_days": 365,
+      "storage": "PostgreSQL with encrypted sensitive fields",
+      "access_level": "Tenant administrators and authorized support roles",
+      "deletion_method": "Tenant offboarding workflow with anonymization or approved erasure"
+    }
+  }
+}

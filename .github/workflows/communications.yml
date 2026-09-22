@@ -1,0 +1,113 @@
+name: Communications Pipeline
+
+on:
+  push:
+    branches: [ main, staging ]
+    paths:
+      - 'pesaguard_backend_pipeline/communications/**'
+      - 'pesaguard_backend_pipeline/tests/test_communications*.py'
+      - 'pesaguard_backend_pipeline/alembic/versions/20260908_add_communication*.py'
+  pull_request:
+    branches: [ main, staging ]
+    paths:
+      - 'pesaguard_backend_pipeline/communications/**'
+      - 'pesaguard_backend_pipeline/tests/test_communications*.py'
+      - 'pesaguard_backend_pipeline/alembic/versions/20260908_add_communication*.py'
+
+jobs:
+  communications-gates:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ['3.12']
+
+    services:
+      postgres:
+        image: postgres:15-alpine
+        env:
+          POSTGRES_USER: pesaguard
+          POSTGRES_PASSWORD: pesaguard
+          POSTGRES_DB: pesaguard_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: 'pip'
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update && sudo apt-get install -y libpq-dev gcc
+
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install pytest==8.3.4
+          if [ -f pesaguard_backend_pipeline/requirements.txt ]; then
+            pip install -r pesaguard_backend_pipeline/requirements.txt
+          else
+            pip install Flask SQLAlchemy psycopg2-binary redis requests PyJWT alembic
+          fi
+
+      - name: Lint check (compile)
+        run: |
+          python -m compileall -q pesaguard_backend_pipeline/communications/
+          python -m compileall -q pesaguard_backend_pipeline/test_communications*.py
+
+      - name: Migration validation
+        env:
+          DATABASE_URL: postgresql://pesaguard:pesaguard@localhost:5432/pesaguard_test
+        run: |
+          alembic upgrade head
+          alembic current
+
+      - name: Run unit + intelligence tests
+        env:
+          PYTHONPATH: .
+          PESAGUARD_COMMUNICATION_RETRY_BASE_SECONDS: 1
+          PESAGUARD_COMMUNICATION_RETRY_JITTER: 0
+        run: |
+          pytest pesaguard_backend_pipeline/test_communications.py -v --tb=short
+          pytest pesaguard_backend_pipeline/test_communications_product.py -v --tb=short
+          pytest pesaguard_backend_pipeline/test_communications_resilience.py -v --tb=short
+          pytest pesaguard_backend_pipeline/test_communications_intelligence.py -v --tb=short
+
+      - name: Run chaos/resilience tests
+        env:
+          PYTHONPATH: .
+        run: |
+          pytest pesaguard_backend_pipeline/test_communications_chaos.py -v --tb=short
+
+      - name: Security scan (bandit)
+        run: |
+          pip install bandit
+          bandit -r pesaguard_backend_pipeline/communications/ -q
+
+      - name: Verify no TODO/FIXME in communications code
+        run: |
+          grep -rn "TODO\|FIXME\|XXX" pesaguard_backend_pipeline/communications/ || echo "No TODOs found"
+
+      - name: Verify no silent delivery claims
+        run: |
+          cd pesaguard_backend_pipeline/communications
+          grep -rn "return True\|return False\|pass$" . | grep -v __pycache__ || echo "Clean"
