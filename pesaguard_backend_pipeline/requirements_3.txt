@@ -17,7 +17,7 @@ rq==2.1.0
 
 # Environment, Configuration & Serialization
 python-dotenv==1.2.2
-PyYAML==6.0.2
+PyYAML==6.0.3
 
 # HTTP Networking & Security
 requests==2.33.0
