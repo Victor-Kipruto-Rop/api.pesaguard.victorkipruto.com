@@ -31,6 +31,22 @@ RECONCILIATION_TRANSITIONS: Final[dict[str, frozenset[str]]] = {
     "completed": frozenset(),
 }
 
+DATA_LIFECYCLE_STAGES: Final[tuple[str, ...]] = (
+    "CREATED", "INGESTED", "VALIDATED", "PROCESSED", "STORED", "CONSUMED", "ARCHIVED", "DELETED", "QUARANTINED",
+)
+
+DATA_LIFECYCLE_TRANSITIONS: Final[dict[str, frozenset[str]]] = {
+    "CREATED": frozenset({"INGESTED", "QUARANTINED"}),
+    "INGESTED": frozenset({"VALIDATED", "QUARANTINED"}),
+    "VALIDATED": frozenset({"PROCESSED", "QUARANTINED"}),
+    "PROCESSED": frozenset({"STORED", "QUARANTINED"}),
+    "STORED": frozenset({"CONSUMED", "ARCHIVED"}),
+    "CONSUMED": frozenset({"ARCHIVED"}),
+    "ARCHIVED": frozenset({"DELETED"}),
+    "DELETED": frozenset(),
+    "QUARANTINED": frozenset({"DELETED"}),
+}
+
 DISCREPANCY_TRANSITIONS: Final[dict[str, frozenset[str]]] = {
     "needs_review": frozenset({"reviewed", "escalated"}),
     "reviewed": frozenset({"resolved", "escalated"}),
@@ -49,6 +65,11 @@ def transition(current: str, target: str, transitions: dict[str, frozenset[str]]
 
 def transition_reconciliation(current: str, target: str) -> str:
     return transition(current, target, RECONCILIATION_TRANSITIONS)
+
+
+def transition_data_lifecycle(current: str, target: str) -> str:
+    """Validate a durable data-lifecycle transition, including quarantine paths."""
+    return transition(current, target, DATA_LIFECYCLE_TRANSITIONS)
 
 
 def transition_transaction(current: str, target: str) -> str:

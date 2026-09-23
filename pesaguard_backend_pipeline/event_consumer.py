@@ -5,7 +5,7 @@ from collections import defaultdict
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, Optional
 
-from event_bus import DeliveryResult, EventDeliveryController, EventEnvelope, validate_event
+from event_bus import DeliveryResult, EventContractError, EventDeliveryController, EventEnvelope, validate_event
 
 
 @dataclass(frozen=True)
@@ -29,7 +29,11 @@ class EventConsumer:
         self.handlers[event_type] = handler
 
     def consume(self, event: EventEnvelope | Dict[str, Any], *, lag: int = 0, traceparent: Optional[str] = None) -> DeliveryResult:
-        event = validate_event(event)
+        try:
+            event = validate_event(event)
+        except EventContractError as exc:
+            event_id = str(event.get("event_id") or "invalid-event") if isinstance(event, dict) else "invalid-event"
+            return DeliveryResult("dead_lettered", event_id, 1, reason=f"schema_validation_failed: {exc}")
         if event.event_type not in self.group.event_types:
             return DeliveryResult("ignored", event.event_id, event.attempt, reason="event_not_assigned_to_group")
         handler = self.handlers.get(event.event_type)

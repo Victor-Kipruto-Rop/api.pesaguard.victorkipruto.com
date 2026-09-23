@@ -1,0 +1,25 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://pesaguard.example/schemas/event-envelope-1.0.json",
+  "type": "object",
+  "required": ["event_id", "event_type", "event_version", "schema_version", "tenant_id", "aggregate_id", "occurred_at", "correlation_id", "payload", "metadata"],
+  "properties": {
+    "event_id": {"$ref": "common-1.0.json#/$defs/Identifier"},
+    "event_type": {"type": "string", "minLength": 1},
+    "event_version": {"type": "integer", "minimum": 1},
+    "schema_version": {"type": "string", "minLength": 1},
+    "tenant_id": {"$ref": "common-1.0.json#/$defs/Tenant"},
+    "aggregate_id": {"$ref": "common-1.0.json#/$defs/Identifier"},
+    "occurred_at": {"$ref": "common-1.0.json#/$defs/Timestamp"},
+    "timestamp": {"$ref": "common-1.0.json#/$defs/Timestamp"},
+    "correlation_id": {"$ref": "common-1.0.json#/$defs/Identifier"},
+    "causation_id": {"$ref": "common-1.0.json#/$defs/Identifier"},
+    "producer": {"type": "string", "minLength": 1},
+    "producer_version": {"type": "string", "minLength": 1},
+    "payload": {"type": "object"},
+    "metadata": {"$ref": "common-1.0.json#/$defs/Metadata"},
+    "attempt": {"type": "integer", "minimum": 1},
+    "max_attempts": {"type": "integer", "minimum": 1}
+  },
+  "additionalProperties": true
+}

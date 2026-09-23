@@ -5,12 +5,12 @@ This document describes the daily backup process, offsite storage, and restore p
 
 ## Backup Policy
 - Frequency: daily backup of Postgres data using `pg_dump`.
-- Retention: keep daily backups for 30 days and weekly archive snapshots for 6 months.
-- Encryption: encrypt artifacts with an externally managed key before off-site upload using the configured backup encryption command boundary.
+  - Retention: keep daily base backups for 30 days, weekly archive snapshots for 6 months, and WAL archives for 30 days for point-in-time recovery.
+  - Encryption: encrypt artifacts with an externally managed key before off-site upload. Base backups use pg_basebackup format; WAL archives are written to encrypted, off-site storage with archive_mode=on and archive_timeout bounded to the RPO.
 - Evidence: each artifact has a SHA-256 manifest and must pass full-stream integrity verification before being considered fresh.
-- Recovery targets: pilot RPO <= 24 hours and RTO <= 4 hours, verified by the quarterly isolated restore drill.
-- Storage: backup files should be copied off the primary host to separate object storage or backup storage.
-- Recovery target: restore from the most recent backup within the retention window.
+- Recovery targets: near-zero RPO for committed financial transactions; RTO < 15 minutes; verified by the quarterly isolated restore drill and the automated restore-drill CI job.
+  - Storage: copy backup files off the primary host to separate object storage or backup storage. Replication via streaming replica or managed standby provides live failover within the primary region.
+  - Recovery target: restore from the most recent base backup within the retention window, replaying WAL archives to the target timestamp for point-in-time recovery.
 
 ## Backup Commands
 ### Create a Postgres dump
@@ -63,9 +63,7 @@ pip install -r requirements_3.txt
 python pesaguard_backend_pipeline/app_2.py
 ```
 
-## Restore Drill
-- Quarterly test: restore the latest backup to an isolated environment and exercise the dashboard read/write flow.
-- Confirm the restored database contains recent records and the reconciliation API starts successfully.
+  - Restore drill: quarterly isolated restore drill, plus an automated CI job that restores a base backup into a disposable PostgreSQL instance and runs the 12-query integrity gate from `validate_restore.py`.
 
 ## Notes
 - The listed retention periods are placeholders and should be adjusted according to contractual and compliance requirements.

@@ -5,7 +5,8 @@ from pathlib import Path
 from event_bus import build_event, consumer_lag_registry
 from event_consumer import ConsumerGroup, EventConsumer
 from logging_utils import JsonFormatter, bind_observability_context, get_observability_context
-from metrics import record_business_metric, record_event_retry, record_http_request, telemetry_snapshot
+from data_quality import run_data_quality
+from metrics import record_business_metric, record_data_quality, record_event_retry, record_http_request, record_pipeline_event, telemetry_snapshot
 from producer import publish_versioned_event
 
 
@@ -61,6 +62,29 @@ def test_application_business_retry_and_lag_metrics_are_recorded():
     assert snapshot["event_retries"] >= 1
     assert snapshot["business"]["fraud_engine_failures"] >= 1
     assert sum(consumer_lag_registry.snapshot()["reconciliation"].values()) == 15
+
+
+def test_pipeline_metrics_record_tenant_scoped_outcomes_and_latency():
+    for outcome in ("entered", "succeeded", "duplicate", "failed", "retried", "dead_lettered"):
+        record_pipeline_event(outcome, tenant_id="tenant-observability", duration_ms=12.5)
+
+    snapshot = telemetry_snapshot()
+    for outcome in ("entered", "succeeded", "duplicate", "failed", "retried", "dead_lettered"):
+        assert snapshot["business"][f"pipeline_{outcome}"] >= 1
+
+
+def test_data_quality_metrics_accept_dimension_scores():
+    result = run_data_quality({
+        "TransID": "quality-metric-1",
+        "TenantID": "tenant-observability",
+        "Provider": "mpesa",
+        "TransAmount": "10.00",
+        "Currency": "KES",
+        "BillRefNumber": "ref-1",
+        "schema_version": "1.0",
+    })
+    record_data_quality(result)
+    assert result.dimension_scores["validity"] == 1.0
 
 
 def test_phase5_alert_rules_cover_required_failure_domains():

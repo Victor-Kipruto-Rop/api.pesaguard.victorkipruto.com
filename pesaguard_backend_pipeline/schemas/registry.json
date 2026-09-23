@@ -1,0 +1,26 @@
+{
+  "name": "pesaguard",
+  "version": "1.0.0",
+  "compatibility_policy": {
+    "major_changes": "Create a new major schema/API version and retain the previous major until its retirement date.",
+    "minor_changes": "Additive fields may ship within the same major version; consumers must ignore unknown fields.",
+    "deprecation": "Announce deprecation, emit telemetry, retain the old schema, and provide a migration path before retirement.",
+    "database": "Database-facing contract changes use expand/backfill/contract Alembic migrations."
+  },
+  "format": "json-schema-draft-2020-12",
+  "event_registry": "event-envelope-1.0.json",
+  "schemas": [
+    "common-1.0.json",
+    "error-1.0.json",
+    "event-envelope-1.0.json",
+    "transaction-1.0.json",
+    "reconciliation-1.0.json",
+    "fraud-1.0.json",
+    "notification-1.0.json",
+    "mpesa-1.0.json",
+    "airtel-money-1.0.json",
+    "bank-1.0.json",
+    "pos-merchant-1.0.json"
+  ],
+  "serialization": {"events": "json", "transport": "redpanda", "registry_compatible": true, "avro_or_protobuf": "reserved for high-volume polyglot topics"}
+}

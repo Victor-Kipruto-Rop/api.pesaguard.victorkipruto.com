@@ -1,0 +1,23 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://pesaguard.example/schemas/mpesa-1.0.json",
+  "title": "PesaGuard M-Pesa callback",
+  "type": "object",
+  "additionalProperties": true,
+  "anyOf": [
+    {
+      "required": ["TransactionType", "TransID", "TransTime", "TransAmount", "BusinessShortCode", "MSISDN"],
+      "properties": {
+        "TransactionType": {"type": "string", "enum": ["Pay Bill", "Buy Goods", "CustomerPayBillOnline", "CustomerBuyGoodsOnline", "C2B"]},
+        "TransID": {"type": "string", "minLength": 1, "maxLength": 255},
+        "TransTime": {"type": "string", "pattern": "^[0-9]{14}$"},
+        "TransAmount": {"type": ["string", "number"], "pattern": "^[+]?[0-9]+(\\.[0-9]+)?$"},
+        "BusinessShortCode": {"type": ["string", "number"], "minLength": 1},
+        "MSISDN": {"type": "string", "pattern": "^254[17][0-9]{8}$"},
+        "Currency": {"type": "string", "pattern": "^[A-Z]{3}$"}
+      }
+    },
+    {"required": ["Body"], "properties": {"Body": {"type": "object", "required": ["stkCallback"]}}},
+    {"required": ["Result"], "properties": {"Result": {"type": "object", "required": ["ResultCode"]}}}
+  ]
+}

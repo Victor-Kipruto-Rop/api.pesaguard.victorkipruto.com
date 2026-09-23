@@ -26,3 +26,27 @@ Production and local runtime settings are driven through environment variables d
 ## Deployment posture
 
 The project supports staged deployment flows and health checks through `health.py` and route conventions. Operationally, Sentry and Sourcery should remain environment-driven and optional rather than embedded in the code as runtime requirements.
+
+## Release gates
+
+Every staging or production release must follow this order:
+
+1. Run the full CI test and compile gates.
+2. Build the immutable container image and scan it for vulnerabilities.
+3. Apply the reviewed Alembic migrations using a deployment identity before serving traffic.
+4. Deploy the image and wait for `/health` to return JSON with `status: "ok"`.
+5. Run authenticated smoke checks for webhook acceptance, tenant-scoped reads, outbox delivery, and metrics.
+6. Monitor error rate, latency, database pool usage, consumer lag, retry rate, and dead-letter rate for the release window.
+7. Promote only after the health and smoke checks pass.
+
+The staging workflow requires the `STAGING_HEALTH_URL` secret when a deploy hook is configured. A deploy webhook response alone is not evidence that the revision is healthy.
+
+The unified release workflow also publishes `ghcr.io/<owner>/<repository>@<digest>`. Staging deploys from the `staging` branch after verification. Production deploys from `main` behind the protected GitHub `production` environment, or through an explicitly approved manual dispatch. Configure deployment hooks to consume the digest supplied in the request payload rather than a mutable branch tag.
+
+## Migration safety
+
+Migrations must be backward-compatible with the currently running image during rolling deployment. Take or verify a database backup before destructive changes, separate expand/backfill/contract work, and never use application startup `create_all()` as a production migration mechanism.
+
+## Rollback trigger
+
+Rollback when health checks fail, error or latency SLOs regress, tenant isolation alarms fire, or transaction/outbox/DLQ counts move unexpectedly. Preserve the release SHA, health response, migration revision, metrics snapshot, and incident correlation ID before restoring the previous image.

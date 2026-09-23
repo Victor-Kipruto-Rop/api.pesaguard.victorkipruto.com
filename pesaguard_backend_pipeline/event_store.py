@@ -23,7 +23,7 @@ from sqlalchemy import create_engine, or_
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.orm import Session, sessionmaker
 
-from lifecycle import transition_transaction
+from lifecycle import transition_data_lifecycle, transition_transaction
 from event_bus import build_event
 from idempotency import derive_idempotency_key
 from models import AuditEvent, Base, IdempotencyRecord, ProcessedTransaction, ReconciliationOutbox, Transaction, TransactionEvent, TransactionOutbox
@@ -282,6 +282,7 @@ class EventStore:
             tenant_id,
             trans_id,
             payload,
+            event_id=idempotency_key,
             correlation_id=str(payload.get("correlation_id") or idempotency_key),
         ).to_dict()
         event_payload["TransID"] = trans_id
@@ -335,6 +336,7 @@ class EventStore:
                     business_short_code=str(payload.get("BusinessShortCode", "")),
                     trans_time=str(payload.get("TransTime", "")),
                     raw_payload=protect_payload(payload),
+                    lifecycle_stage="STORED",
                     created_at=datetime.now(timezone.utc),
                 )
                 session.add(t_record)
@@ -470,6 +472,7 @@ class EventStore:
             tenant_id,
             trans_id,
             payload,
+            event_id=idempotency_key,
             correlation_id=str(payload.get("correlation_id") or idempotency_key),
         ).to_dict()
         event_payload["TransID"] = trans_id
@@ -514,6 +517,7 @@ class EventStore:
                 business_short_code=str(payload.get("BusinessShortCode", "")),
                 trans_time=str(payload.get("TransTime", "")),
                 raw_payload=protect_payload(payload),
+                lifecycle_stage="STORED",
                 created_at=datetime.now(timezone.utc),
             )
             session.add(t_record)
@@ -675,6 +679,27 @@ class EventStore:
                 return False
             return True
 
+    def mark_transaction_archived(self, transaction_id: str, tenant_id: str, object_key: str) -> bool:
+        """Mark a transaction archived only after its immutable archive is written."""
+        self._ensure_ready()
+        with self.Session() as session:
+            row = session.query(Transaction).filter(
+                Transaction.id == transaction_id,
+                Transaction.tenant_id == tenant_id,
+            ).one_or_none()
+            if row is None:
+                return False
+            try:
+                transition_data_lifecycle(row.lifecycle_stage, "ARCHIVED")
+            except ValueError:
+                session.rollback()
+                return False
+            row.lifecycle_stage = "ARCHIVED"
+            row.archive_object_key = object_key
+            row.archived_at = datetime.now(timezone.utc)
+            session.commit()
+            return True
+
     def write_dead_letter(
         self,
         payload: Optional[Dict[str, Any]],
@@ -739,7 +764,13 @@ class EventStore:
                 row.locked_until = lease_until
             session.commit()
             return [
-                {"id": row.id, "topic": row.topic, "payload": row.payload, "attempts": row.attempts}
+                {
+                    "id": row.id,
+                    "tenant_id": row.tenant_id,
+                    "topic": row.topic,
+                    "payload": row.payload,
+                    "attempts": row.attempts,
+                }
                 for row in rows
             ]
 
@@ -765,6 +796,38 @@ class EventStore:
             row.status = "failed"
             row.last_error = str(error)[:1000]
             row.available_at = datetime.now(timezone.utc) + timedelta(seconds=min(max(retry_seconds, 1), 3600))
+            row.locked_until = None
+            session.commit()
+
+    def mark_outbox_dead_lettered(self, outbox_id: str, error: str) -> None:
+        """Atomically stop retrying an exhausted outbox row and record it for replay."""
+        from models import DeadLetter
+
+        self._ensure_ready()
+        with self.Session() as session:
+            row = session.get(TransactionOutbox, outbox_id)
+            if row is None or row.status == "dead_lettered":
+                return
+
+            dead_letter_id = f"dl_outbox_{outbox_id}"
+            dead_letter = session.get(DeadLetter, dead_letter_id)
+            if dead_letter is None:
+                dead_letter = DeadLetter(
+                    id=dead_letter_id,
+                    tenant_id=row.tenant_id,
+                    reason="transaction_outbox_publish_exhausted",
+                    payload=row.payload,
+                    error_detail=str(error)[:2000],
+                    attempts=row.attempts,
+                    processed=False,
+                    replay_status="idle",
+                    event_key=row.event_key,
+                    created_at=datetime.now(timezone.utc),
+                )
+                session.add(dead_letter)
+
+            row.status = "dead_lettered"
+            row.last_error = str(error)[:1000]
             row.locked_until = None
             session.commit()
 

@@ -1,0 +1,8 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://pesaguard.example/schemas/error-1.0.json",
+  "type": "object",
+  "required": ["error", "message", "request_id"],
+  "properties": {"error": {"type": "string"}, "message": {"type": "string"}, "request_id": {"type": "string"}, "details": {"type": "object"}},
+  "additionalProperties": false
+}

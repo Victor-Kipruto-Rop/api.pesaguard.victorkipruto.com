@@ -379,6 +379,11 @@ def pitr_restore(backup_file: Path, *, target_time: Optional[str] = None, target
         logger.error("Base backup file not found: %s", backup_file)
         sys.exit(1)
 
+    if backup_file.name.endswith((".sql.gz", ".sql.gz.enc")):
+        logger.error("PITR requires a pg_basebackup artifact, not a pg_dump SQL archive: %s", backup_file)
+        _write_status("pitr_restore_failed", error="pg_dump archive cannot be used for WAL replay", base_backup=backup_file.name)
+        sys.exit(1)
+
     if not _verify_manifest(backup_file):
         logger.error("Base backup manifest verification failed: %s", backup_file)
         sys.exit(1)
@@ -468,6 +473,7 @@ def main():
             logger.info("Backup creation and integrity verification succeeded.")
         else:
             logger.error("Backup created but failed integrity check.")
+            _write_status("failed", artifact=backup_file.name, error="post-creation integrity verification failed")
             sys.exit(1)
 
     elif args.restore:
@@ -483,6 +489,7 @@ def main():
         if test_backup_integrity(latest_backup):
             logger.info("Latest backup (%s) integrity verified successfully.", latest_backup.name)
         else:
+            _write_status("failed", artifact=latest_backup.name, error="backup integrity verification failed")
             sys.exit(1)
 
     elif args.list:

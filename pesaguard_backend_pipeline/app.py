@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import os
+import time
 from typing import Any, Dict, Optional
 
 import redis
@@ -18,7 +19,7 @@ from event_store import EventStore, ProcessResult, provider_account_id
 from health import build_health_payload
 from idempotency import derive_idempotency_key
 from logging_utils import bind_observability_context, configure_logging, get_correlation_id, get_observability_context, set_correlation_id
-from metrics import build_metrics_payload, record_http_request, record_business_metric, record_security_event
+from metrics import build_metrics_payload, record_http_request, record_business_metric, record_pipeline_event, record_security_event
 from rate_limiter import RateLimiter
 from security_helpers import (
     get_client_ip,
@@ -31,6 +32,7 @@ from tenant_settings import TenantSettingsStore
 from validators import validate_daraja_payload
 from ingestion import IngestionError, IngestionService
 from auth_rbac import AuthRBAC, get_current_user, require_auth
+from api_validation import ApiContractError, validate_transaction_create, validate_transaction_response
 
 configure_logging()
 logger = logging.getLogger("pesaguard.webhook")
@@ -300,6 +302,7 @@ def health():
 @app.route("/webhook/mpesa/confirmation", methods=["POST"])
 def mpesa_confirmation():
     """Handles C2B confirmation callbacks from Daraja with strict idempotency and atomicity safeguards."""
+    started = time.perf_counter()
     payload = request.get_json(silent=True)
     tenant_id = os.getenv("TENANT_ID", "").strip()
 
@@ -308,6 +311,8 @@ def mpesa_confirmation():
         return jsonify({"ResultCode": 1, "ResultDesc": "Tenant context is required"}), 400
 
     if not payload:
+        record_pipeline_event("entered", tenant_id=tenant_id or "default")
+        record_pipeline_event("dead_lettered", tenant_id=tenant_id or "default", duration_ms=(time.perf_counter() - started) * 1000)
         logger.warning("Empty or invalid JSON payload received")
         try:
             event_store.write_dead_letter(None, reason="invalid_json", error_detail="empty_or_invalid_json", tenant_id=tenant_id)
@@ -319,8 +324,10 @@ def mpesa_confirmation():
         return jsonify({"ResultCode": 1, "ResultDesc": "Request body too large"}), 413
 
     try:
+        record_pipeline_event("entered", tenant_id=tenant_id)
         ingestion = ingestion_service.ingest("mpesa", payload, tenant_id=tenant_id)
     except IngestionError as error:
+        record_pipeline_event("failed", tenant_id=tenant_id, duration_ms=(time.perf_counter() - started) * 1000)
         logger.warning("Payload validation failed: %s", error)
         try:
             event_store.write_dead_letter(payload, reason="validation_failed", error_detail=str(error), tenant_id=tenant_id)
@@ -332,6 +339,7 @@ def mpesa_confirmation():
     idempotency_key = ingestion.envelope.idempotency_key
 
     if ingestion.result == ProcessResult.DUPLICATE:
+        record_pipeline_event("duplicate", tenant_id=tenant_id, duration_ms=(time.perf_counter() - started) * 1000)
         record_business_metric("duplicates")
         logger.info(
             "Duplicate transaction (pre-check)",
@@ -342,6 +350,7 @@ def mpesa_confirmation():
     result = ingestion.result
 
     if result == ProcessResult.DUPLICATE:
+        record_pipeline_event("duplicate", tenant_id=tenant_id, duration_ms=(time.perf_counter() - started) * 1000)
         record_business_metric("duplicates")
         logger.info(
             "Duplicate transaction (caught at write time)",
@@ -350,6 +359,7 @@ def mpesa_confirmation():
         return jsonify({"ResultCode": 0, "ResultDesc": "Accepted (duplicate ignored)"}), 200
 
     if result == ProcessResult.ERROR:
+        record_pipeline_event("failed", tenant_id=tenant_id, duration_ms=(time.perf_counter() - started) * 1000)
         logger.error(
             "Failed to record transaction, requesting Daraja retry",
             extra={"tenant_id": tenant_id, "trans_id": trans_id, "idempotency_key": idempotency_key},
@@ -357,6 +367,7 @@ def mpesa_confirmation():
         return jsonify({"ResultCode": 1, "ResultDesc": "Temporary processing error, please retry"}), 500
 
     record_business_metric("transactions_received")
+    record_pipeline_event("succeeded", tenant_id=tenant_id, duration_ms=(time.perf_counter() - started) * 1000)
 
     # Best-effort Redis cache warm: maintain both the canonical idempotency key and
     # the legacy trans-id key expected by older callers and tests.
@@ -386,7 +397,11 @@ def create_transaction():
     current_user = get_current_user()
     header_tenant_id = request.headers.get("X-Tenant-ID", "").strip()
     tenant_id = str(getattr(current_user, "tenant_id", "") or header_tenant_id).strip()
-    payload = request.get_json(silent=True) or {}
+    payload = request.get_json(silent=True)
+    try:
+        validate_transaction_create(payload)
+    except ApiContractError as exc:
+        return jsonify({"error": "invalid_request", "message": str(exc)}), 400
     if not idempotency_key or len(idempotency_key) > 255:
         return jsonify({"error": "Idempotency-Key header is required"}), 400
     if not tenant_id:
@@ -409,7 +424,9 @@ def create_transaction():
     )
     if result == ProcessResult.ERROR:
         return jsonify({"error": "transaction could not be persisted"}), 500
-    return jsonify({"status": "accepted", "duplicate": result == ProcessResult.DUPLICATE, "idempotency_key": idempotency_key}), 200
+    response_payload = {"status": "accepted", "duplicate": result == ProcessResult.DUPLICATE, "idempotency_key": idempotency_key}
+    validate_transaction_response(response_payload)
+    return jsonify(response_payload), 200
 
 
 @app.route("/api/v1/ingest/safaricom", methods=["POST"])

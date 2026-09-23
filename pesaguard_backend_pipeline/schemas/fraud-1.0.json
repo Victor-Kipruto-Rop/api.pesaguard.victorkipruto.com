@@ -1,0 +1,11 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://pesaguard.example/schemas/fraud-1.0.json",
+  "$defs": {
+    "FraudAnalysisRequest": {"type": "object", "required": ["transaction_id"], "properties": {"transaction_id": {"$ref": "common-1.0.json#/$defs/Identifier"}, "features": {"type": "object"}}, "additionalProperties": false},
+    "FraudFeatures": {"type": "object", "properties": {"amount": {"$ref": "common-1.0.json#/$defs/Money"}, "velocity": {"type": "number", "minimum": 0}, "new_device": {"type": "boolean"}, "geo_distance_km": {"type": "number", "minimum": 0}}, "additionalProperties": true},
+    "RiskScore": {"type": "object", "required": ["transaction_id", "risk_score", "risk_level"], "properties": {"transaction_id": {"$ref": "common-1.0.json#/$defs/Identifier"}, "risk_score": {"type": "number", "minimum": 0, "maximum": 1}, "risk_level": {"type": "string", "enum": ["LOW", "MEDIUM", "HIGH", "CRITICAL"]}}, "additionalProperties": true},
+    "Anomaly": {"type": "object", "required": ["code", "severity", "message"], "properties": {"code": {"type": "string"}, "severity": {"type": "string"}, "message": {"type": "string"}}, "additionalProperties": true},
+    "FraudDecision": {"type": "object", "required": ["transaction_id", "decision"], "properties": {"transaction_id": {"$ref": "common-1.0.json#/$defs/Identifier"}, "decision": {"type": "string", "enum": ["ALLOW", "REVIEW", "BLOCK"]}, "reason_codes": {"type": "array", "items": {"type": "string"}}}, "additionalProperties": true}
+  }
+}

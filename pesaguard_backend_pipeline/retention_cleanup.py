@@ -179,7 +179,8 @@ def cleanup_retention(tenant_id: Optional[str] = None, dry_run: bool = False) ->
 
     try:
         deleted_transactions = _delete_in_batches(
-            session, Transaction, Transaction.created_at, oldest_transaction, tenant_id, dry_run
+            session, Transaction, Transaction.created_at, oldest_transaction, tenant_id, dry_run,
+            Transaction.archived_at.is_not(None),
         )
         deleted_processed = _delete_in_batches(
             session, ProcessedTransaction, ProcessedTransaction.received_at, oldest_transaction, tenant_id, dry_run

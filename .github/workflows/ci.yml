@@ -60,6 +60,7 @@ jobs:
           else
             pip install Flask==3.1.0 SQLAlchemy==2.0.38 psycopg2-binary==2.9.10 redis==5.2.1 rq==2.1.0 pytest==8.3.4 requests==2.32.3 PyJWT==2.10.1
           fi
+          pip install jsonschema==4.23.0
 
       - name: Compile Python modules
         run: python -m compileall -q pesaguard_backend_pipeline
@@ -76,6 +77,17 @@ jobs:
         run: |
           pytest -v --tb=short --durations=10
 
+      - name: Run breaking-change contract gate
+        shell: bash
+        run: |
+          BASE_SHA="${{ github.event.pull_request.base.sha || github.event.before }}"
+          if [ "$BASE_SHA" = "0000000000000000000000000000000000000000" ] || ! git cat-file -e "$BASE_SHA^{commit}" 2>/dev/null; then
+            echo "No comparable base revision; skipping API breaking-change comparison."
+            exit 0
+          fi
+          git show "$BASE_SHA:docs/api/openapi.json" > /tmp/openapi-base.json
+          python pesaguard_backend_pipeline/schema_compatibility.py --old-openapi /tmp/openapi-base.json --new-openapi docs/api/openapi.json
+
       - name: Run frontend tests (if applicable)
         run: |
           if [ -f frontend/package.json ]; then
@@ -83,3 +95,151 @@ jobs:
             npm --prefix frontend test -- --watchAll=false
           fi
         continue-on-error: true
+
+  restore-drill:
+    runs-on: ubuntu-latest
+    needs: test
+
+    services:
+      postgres:
+        image: postgres:15-alpine
+        env:
+          POSTGRES_USER: pesaguard
+          POSTGRES_PASSWORD: pesaguard
+          POSTGRES_DB: pesaguard_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install system dependencies (pg_dump, psql, psycopg2)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libpq-dev gcc postgresql-client
+
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          if [ -f requirements.txt ]; then
+            pip install -r requirements.txt
+          else
+            pip install psycopg2-binary==2.9.10 pytest==8.3.4
+          fi
+
+      - name: Create isolated target database
+        env:
+          PGPASSWORD: pesaguard
+        run: |
+          psql -h localhost -U pesaguard -d pesaguard_test -c "CREATE DATABASE pesaguard_restore_test;"
+
+      - name: Set up schema and seed test data in source database
+        env:
+          PGPASSWORD: pesaguard
+        run: |
+          psql -h localhost -U pesaguard -d pesaguard_test -v ON_ERROR_STOP=1 -c "
+            CREATE TABLE IF NOT EXISTS transactions (
+              id            TEXT PRIMARY KEY,
+              trans_amount  NUMERIC(12,2) NOT NULL,
+              phone_number  TEXT,
+              provider      TEXT,
+              status        TEXT
+            );
+            CREATE TABLE IF NOT EXISTS processed_transactions (
+              id            SERIAL PRIMARY KEY,
+              transaction_id TEXT REFERENCES transactions(id),
+              status        TEXT
+            );
+            CREATE TABLE IF NOT EXISTS transaction_outbox (
+              id            UUID PRIMARY KEY,
+              transaction_id TEXT,
+              processed_at  TIMESTAMPTZ
+            );
+            CREATE TABLE IF NOT EXISTS action_audit_entries (
+              id            SERIAL PRIMARY KEY,
+              details       TEXT
+            );
+            CREATE TABLE IF NOT EXISTS fraud_risk_assessments (
+              id            SERIAL PRIMARY KEY,
+              transaction_id TEXT,
+              score         NUMERIC
+            );
+            CREATE TABLE IF NOT EXISTS discrepancies (
+              id            SERIAL PRIMARY KEY,
+              transaction_id TEXT
+            );
+            CREATE TABLE IF NOT EXISTS reconciliation_matches (
+              id            SERIAL PRIMARY KEY,
+              amount        NUMERIC(12,2)
+            );
+          "
+
+      - name: Seed test data
+        env:
+          PGPASSWORD: pesaguard
+        run: |
+          psql -h localhost -U pesaguard -d pesaguard_test -v ON_ERROR_STOP=1 -c "
+            INSERT INTO transactions (id, trans_amount, phone_number, provider, status) VALUES
+              ('tx_001', 100.00, '+254700000001', 'mpesa', 'SUCCESS'),
+              ('tx_002', 500.00, '+254700000002', 'mpesa', 'PENDING'),
+              ('tx_003', 1500.00, '+254700000003', 'airtel', 'SUCCESS');
+            INSERT INTO processed_transactions (transaction_id, status) VALUES
+              ('tx_001', 'PROCESSED'),
+              ('tx_002', 'PROCESSED'),
+              ('tx_003', 'PROCESSED');
+            INSERT INTO action_audit_entries (details) VALUES
+              ('discrepancy 42 resolved'),
+              ('transaction tx_001 reconciled');
+            INSERT INTO fraud_risk_assessments (transaction_id, score) VALUES
+              ('tx_001', 0.1),
+              ('tx_002', 0.9);
+            INSERT INTO discrepancies (transaction_id) VALUES ('tx_002');
+            INSERT INTO reconciliation_matches (amount) VALUES (100.00), (1500.00);
+          "
+
+      - name: Create backup using canonical backup module
+        env:
+          DATABASE_URL: postgresql://pesaguard:pesaguard@localhost:5432/pesaguard_test
+          PESAGUARD_ENVIRONMENT: development
+          PESAGUARD_BACKUP_DIR: /tmp/pesaguard_backups
+          PESAGUARD_BACKUP_RETENTION_DAYS: 30
+          PESAGUARD_BACKUP_STATUS_FILE: /tmp/pesaguard_backups/last_status.json
+          PYTHONPATH: .
+        run: |
+          python pesaguard_backend_pipeline/backup_postgres.py --backup
+          echo "Backup created:"
+          ls -la /tmp/pesaguard_backups/
+
+      - name: Restore backup into isolated database and validate
+        env:
+          DATABASE_URL: postgresql://pesaguard:pesaguard@localhost:5432/pesaguard_restore_test
+          PESAGUARD_ENVIRONMENT: development
+          PYTHONPATH: .
+        run: |
+          BACKUP_FILE=$(ls -t /tmp/pesaguard_backups/pesaguard_*.sql.gz | head -1)
+          echo "Restoring from: $BACKUP_FILE"
+          python pesaguard_backend_pipeline/operations/restore_drill.py \
+            --backup-file "$BACKUP_FILE" \
+            --database-url "postgresql://pesaguard:pesaguard@localhost:5432/pesaguard_restore_test" \
+            --output /tmp/pesaguard_backups/restore-drill.json
+          echo "Restore drill result:"
+          cat /tmp/pesaguard_backups/restore-drill.json
+          python -c "import json,sys; d=json.load(open('/tmp/pesaguard_backups/restore-drill.json')); print('Status:', d['status']); sys.exit(0 if d['status']=='passed' else 1)"
+
+      - name: Archive restore drill artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: restore-drill-result
+          path: /tmp/pesaguard_backups/restore-drill.json

@@ -24,6 +24,8 @@ from normalization import (
     normalize_transaction_type,
 )
 from validators import extract_canonical_event, validate_daraja_payload
+from schema_validation import validate_canonical_transaction
+from source_contracts import SourceContractError, validate_source_payload
 
 
 class IngestionError(ValueError):
@@ -289,6 +291,10 @@ def _build_envelope(canonical: CanonicalTransaction, raw_payload: Dict[str, Any]
         raise IngestionError("provider transaction reference and account are required")
     payload = canonical.to_persistence_payload()
     payload["raw_payload"] = raw_payload
+    try:
+        validate_canonical_transaction(payload)
+    except ValueError as exc:
+        raise IngestionError(str(exc)) from exc
     idempotency_key = derive_idempotency_key(payload)
     observed_at = canonical.transaction_time or datetime.now(timezone.utc).isoformat()
     return IngestionEnvelope(
@@ -339,6 +345,10 @@ class IngestionService:
         adapter = self.adapters.get(str(provider).strip().lower())
         if adapter is None:
             raise IngestionError(f"unsupported ingestion provider: {provider}")
+        try:
+            validate_source_payload(provider, payload)
+        except SourceContractError as exc:
+            raise IngestionError(str(exc)) from exc
         envelope = adapter.normalize(payload, tenant_id=tenant_id)
         result = self.event_store.mark_processed(
             envelope.payload,

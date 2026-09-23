@@ -4,6 +4,8 @@
 
 PesaGuard is implemented as a modular monolith with explicit boundaries around ingestion, validation, storage, reconciliation, alerting, and operations. The application remains a single deployable runtime, but the codebase is intentionally organized so each component owns one responsibility and has a documented interface.
 
+State ownership and recovery responsibilities are defined in [State Ownership](STATE_OWNERSHIP.md). PostgreSQL owns current financial state; Redis/RQ coordinates disposable work; Kafka provides replayable transport; and object storage owns immutable raw batch inputs.
+
 ## Primary components
 
 ### 1. Ingress and API boundary

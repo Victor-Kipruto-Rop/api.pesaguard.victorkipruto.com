@@ -131,25 +131,29 @@ def _provenance_row_from_quality(
     pipeline_version = pipeline_version or DEFAULT_PIPELINE_VERSION
     normalized_snapshot = _safe_json(_normalize_payload(raw))
     lineage = build_lineage(
+        event_id=str(raw.get("event_id") or tx_id),
+        transaction_id=tx_id,
+        tenant_id=tenant_id,
         provider_id=provider_id,
-        raw_payload_hash=_sha256_json(raw),
-        schema_version=schema_version,
-        pipeline_version=pipeline_version,
     )
+    lineage = lineage.to_dict()
     lineage["processed_at"] = _iso_now()
     return {
         "transaction_id": tx_id,
         "tenant_id": tenant_id,
         "provider_id": provider_id,
+        "lineage_id": lineage["lineage_id"],
+        "event_id": lineage["event_id"],
         "schema_version": schema_version,
         "pipeline_version": pipeline_version,
-        "dq_status": result.status.value,
+        "dq_status": result.status,
         "dq_completeness": result.completeness,
         "dq_validity": result.validity,
         "dq_timeliness": result.timeliness,
         "dq_accuracy": result.accuracy,
         "dq_consistency": result.consistency,
         "dq_uniqueness": result.uniqueness,
+        "dq_failures": result.to_dict()["failures"],
         "raw_hash": _sha256_json(raw),
         "normalized_snapshot": normalized_snapshot,
         "lineage_snapshot": lineage,
@@ -169,10 +173,12 @@ def persist_provenance(
         result, raw, schema_version=schema_version, pipeline_version=pipeline_version
     )
     record = TransactionProvenance(
+        lineage_id=row["lineage_id"],
+        event_id=row["event_id"],
         transaction_id=row["transaction_id"],
         tenant_id=row["tenant_id"],
         provider_id=row["provider_id"],
-        source_payload_hash=row["raw_hash"],
+        raw_payload_sha256=row["raw_hash"],
         schema_version=row["schema_version"],
         pipeline_version=row["pipeline_version"],
         dq_status=row["dq_status"],
@@ -182,9 +188,10 @@ def persist_provenance(
         dq_accuracy=row["dq_accuracy"],
         dq_consistency=row["dq_consistency"],
         dq_uniqueness=row["dq_uniqueness"],
+        dq_failures=row["dq_failures"],
         lineage_snapshot=row.get("lineage_snapshot"),
-        normalized_snapshot=row.get("normalized_snapshot"),
-        processed_at=_iso_now(),
+        dq_checked_at=datetime.now(timezone.utc),
+        normalized_payload_sha256=_sha256_json(row["normalized_snapshot"]),
     )
     session.add(record)
     session.flush()
@@ -211,20 +218,19 @@ def quarantine_record(
         transaction_id=row["transaction_id"],
         tenant_id=row["tenant_id"],
         provider_id=row["provider_id"],
-        source_payload_hash=row["raw_hash"],
-        schema_version=row["schema_version"],
-        pipeline_version=row["pipeline_version"],
+        lineage_id=row["lineage_id"],
         reason=failure_reasons or "quality_gate_failure",
-        dq_status=row["dq_status"],
-        dq_completeness=row["dq_completeness"],
-        dq_validity=row["dq_validity"],
-        dq_timeliness=row["dq_timeliness"],
-        dq_accuracy=row["dq_accuracy"],
-        dq_consistency=row["dq_consistency"],
-        dq_uniqueness=row["dq_uniqueness"],
-        lineage_snapshot=row.get("lineage_snapshot"),
-        normalized_snapshot=row.get("normalized_snapshot"),
-        quarantined_at=_iso_now(),
+        failure_rule=", ".join(sorted({failure.rule.code for failure in result.failures})) or None,
+        payload=_safe_json(raw),
+        payload_sha256=row["raw_hash"],
+        rejection_context={
+            "dq_status": row["dq_status"],
+            "dimension_scores": result.dimension_scores,
+            "failures": row["dq_failures"],
+            "schema_version": row["schema_version"],
+            "pipeline_version": row["pipeline_version"],
+            "event_id": row["event_id"],
+        },
     )
     session.add(record)
     session.flush()
@@ -260,10 +266,10 @@ class DataProvenance:
 
     def evaluate(self, raw: Dict[str, Any]) -> DataQualityResult:
         lineage = self.lineage_builder(
+            event_id=str(raw.get("event_id") or _transaction_id_from_payload(raw) or "unknown"),
+            transaction_id=_transaction_id_from_payload(raw) or "unknown",
+            tenant_id=_tenant_id_from_payload(raw) or "unknown",
             provider_id=_provider_from_payload(raw),
-            raw_payload_hash=_sha256_json(raw),
-            schema_version=schema_version_from_payload(raw) or self.schema_version,
-            pipeline_version=self.pipeline_version,
         )
         return run_data_quality(raw, lineage=lineage)
 
@@ -275,6 +281,8 @@ class DataProvenance:
         quarantine_on_failure: bool = True,
     ) -> Dict[str, Any]:
         quality = self.evaluate(raw)
+        from metrics import record_data_quality
+        record_data_quality(quality)
         if quality.status == DataQualityStatus.FAIL:
             if quarantine_on_failure:
                 quarantine_record(

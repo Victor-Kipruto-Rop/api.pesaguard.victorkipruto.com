@@ -311,7 +311,12 @@ def publish_transaction_batch(
             _fallback_to_dead_letter_queue(topic, p, error_msg)
         raise CircuitBreakerOpenException(error_msg)
 
-    producer = _producer_manager.get_producer()
+    try:
+        producer = _producer_manager.get_producer()
+    except Exception:
+        logger.exception("Batch producer initialization failed for topic=%s", topic)
+        _circuit_breaker.record_failure()
+        return [False] * len(payloads)
     futures = []
 
     for payload in payloads:
@@ -348,3 +353,53 @@ def publish_transaction_batch(
 
     logger.info("Batch publish completed for topic=%s: %d/%d items delivered successfully.", topic, successful_count, len(payloads))
     return successful_count
+
+
+def publish_transaction_batch_results(
+    topic: str,
+    payloads: List[Dict[str, Any]],
+    correlation_id: Optional[str] = None,
+) -> List[bool]:
+    """Batch-send events while retaining per-message delivery outcomes for outbox updates."""
+    if not payloads:
+        return []
+    if not _circuit_breaker.can_execute():
+        return [False] * len(payloads)
+
+    producer = _producer_manager.get_producer()
+    results = [False] * len(payloads)
+    futures = []
+    for index, payload in enumerate(payloads):
+        try:
+            _validate_payload_schema(payload)
+            trans_id = payload.get("TransID") or payload.get("trans_id") or payload.get("aggregate_id") or payload.get("event_id")
+            headers = [("tenant_id", str(payload.get("tenant_id", "default")).encode("utf-8"))]
+            if correlation_id:
+                headers.append(("correlation_id", correlation_id.encode("utf-8")))
+            future = producer.send(
+                topic,
+                key=str(trans_id).encode("utf-8") if trans_id else None,
+                value=payload,
+                headers=headers,
+            )
+            futures.append((index, future))
+        except Exception:
+            logger.exception("Batch validation or enqueue failed for topic=%s index=%s", topic, index)
+
+    try:
+        producer.flush(timeout=PRODUCER_SEND_TIMEOUT_SECONDS)
+    except Exception:
+        logger.exception("Batch flush failed for topic=%s", topic)
+
+    for index, future in futures:
+        try:
+            future.get(timeout=PRODUCER_SEND_TIMEOUT_SECONDS)
+            results[index] = True
+        except Exception:
+            logger.exception("Batch delivery failed for topic=%s index=%s", topic, index)
+
+    if all(results):
+        _circuit_breaker.record_success()
+    else:
+        _circuit_breaker.record_failure()
+    return results

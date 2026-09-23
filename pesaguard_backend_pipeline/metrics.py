@@ -256,6 +256,34 @@ def record_business_metric(name: str, amount: int = 1) -> None:
         redis_client.incr(f"{_SHARED_METRICS_PREFIX}:business:{name}", amount)
 
 
+def record_pipeline_event(outcome: str, *, tenant_id: str = "default", duration_ms: Optional[float] = None) -> None:
+    """Record a bounded transaction-pipeline outcome with tenant context."""
+    allowed_outcomes = {"entered", "succeeded", "duplicate", "failed", "retried", "dead_lettered"}
+    if outcome not in allowed_outcomes:
+        raise ValueError(f"unsupported pipeline outcome: {outcome}")
+    tenant = str(tenant_id or "default")[:128]
+    record_business_metric(f"pipeline_{outcome}")
+    if HAS_PROMETHEUS_CLIENT:
+        _pipeline_events.labels(outcome=outcome, tenant_id=tenant).inc()
+        if duration_ms is not None:
+            _pipeline_duration.labels(tenant_id=tenant).observe(float(duration_ms) / 1000)
+    redis_client = _get_shared_redis()
+    if redis_client is not None:
+        redis_client.incr(f"{_SHARED_METRICS_PREFIX}:pipeline:{outcome}:{tenant}")
+
+
+def record_data_quality(result: Any) -> None:
+    """Export quality-check outcomes and dimension scores for one payload."""
+    tenant = str(getattr(result, "tenant_id", "default") or "default")[:128]
+    status = str(getattr(result, "status", "unknown"))
+    scores = getattr(result, "dimension_scores", {})
+    if not HAS_PROMETHEUS_CLIENT:
+        return
+    for dimension, score in scores.items():
+        _dq_checks.labels(dimension=dimension, status=status, tenant_id=tenant).inc()
+        _dq_scores.labels(dimension=dimension, tenant_id=tenant).set(float(score))
+
+
 def record_security_event(amount: int = 1) -> None:
     """Record a security decision through the shared business counter."""
     record_business_metric("security_events", amount)
@@ -447,7 +475,7 @@ def _shared_scrape_window_summary() -> Optional[Dict[str, Any]]:
 
 # Attempt importing official prometheus_client library with fallback support
 try:
-    from prometheus_client import CollectorRegistry, Counter, Gauge, REGISTRY, generate_latest
+    from prometheus_client import CollectorRegistry, Counter, Gauge, Histogram, REGISTRY, generate_latest
     HAS_PROMETHEUS_CLIENT = True
 except ImportError:
     HAS_PROMETHEUS_CLIENT = False
@@ -464,6 +492,26 @@ if HAS_PROMETHEUS_CLIENT:
     _runtime_timeouts = _counter("pesaguard_runtime_timeouts_total", "Application timeouts")
     _runtime_db_queries = _counter("pesaguard_runtime_db_queries_total", "Database queries")
     _runtime_retries = _counter("pesaguard_event_retries", "Event retries")
+    _pipeline_events = _counter(
+        "pesaguard_pipeline_events_total",
+        "Transaction pipeline outcomes",
+        ["outcome", "tenant_id"],
+    )
+    _pipeline_duration = Histogram(
+        "pesaguard_pipeline_duration_seconds",
+        "Transaction pipeline processing duration",
+        ["tenant_id"],
+    )
+    _dq_checks = _counter(
+        "pesaguard_data_quality_checks_total",
+        "Data quality checks by dimension and outcome",
+        ["dimension", "status", "tenant_id"],
+    )
+    _dq_scores = Gauge(
+        "pesaguard_data_quality_score",
+        "Latest data quality score by dimension",
+        ["dimension", "tenant_id"],
+    )
 
     def _alert_counter() -> Counter:
         return _counter(
@@ -476,6 +524,8 @@ if HAS_PROMETHEUS_CLIENT:
     _alert_delivery_failures = _counter("pesaguard_alert_delivery_failures_total", "Alert delivery failures")
 else:
     _runtime_requests = _runtime_errors = _runtime_timeouts = _runtime_db_queries = _runtime_retries = None
+    _pipeline_events = _pipeline_duration = None
+    _dq_checks = _dq_scores = None
     _alert_delivery_counter = None
     _alert_delivery_failures = None
 

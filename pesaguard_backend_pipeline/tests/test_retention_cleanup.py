@@ -30,7 +30,8 @@ def test_cleanup_retention_deletes_older_records(monkeypatch):
             recent_time = datetime.now(timezone.utc)
             session.add_all([
                 Transaction(trans_id="old-tx", tenant_id="tenant-a", trans_amount=10.0, msisdn="254700000000", business_short_code="123", trans_time="20240101120000", raw_payload={}, created_at=old_time),
-                Transaction(trans_id="old-delete", tenant_id="tenant-a", trans_amount=11.0, msisdn="254700000002", business_short_code="123", trans_time="20240101120000", raw_payload={}, created_at=old_time),
+                Transaction(trans_id="old-unarchived", tenant_id="tenant-a", trans_amount=12.0, msisdn="254700000003", business_short_code="123", trans_time="20240101120000", raw_payload={}, created_at=old_time),
+                Transaction(trans_id="old-delete", tenant_id="tenant-a", trans_amount=11.0, msisdn="254700000002", business_short_code="123", trans_time="20240101120000", raw_payload={}, created_at=old_time, lifecycle_stage="ARCHIVED", archived_at=old_time, archive_object_key="tier=cold/tenant=tenant-a/old-delete.json"),
                 Transaction(trans_id="new-tx", tenant_id="tenant-a", trans_amount=20.0, msisdn="254700000001", business_short_code="123", trans_time="20240101120000", raw_payload={}, created_at=recent_time),
                 Discrepancy(id="old-disc", trans_id="old-tx", tenant_id="tenant-a", anomaly_type="missing_payment", status="needs_review", severity="critical", details="old", detected_at=old_time),
                 Discrepancy(id="new-disc", trans_id="new-tx", tenant_id="tenant-a", anomaly_type="duplicate", status="needs_review", severity="warning", details="new", detected_at=recent_time),
@@ -54,4 +55,6 @@ def test_cleanup_retention_deletes_older_records(monkeypatch):
         assert result["deleted_audit"] == 0
         assert result["eligible_audit_entries"] == 1
         assert result["post_delete_counts"]["transaction_outbox"] == 0
+        with Session() as check_session:
+            assert check_session.query(Transaction).filter_by(trans_id="old-unarchived").count() == 1
         engine.dispose()

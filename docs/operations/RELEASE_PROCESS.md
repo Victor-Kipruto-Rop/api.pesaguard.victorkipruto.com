@@ -70,3 +70,20 @@ At minimum, validate syntax and imports, focused unit behavior, cross-tenant iso
 - Replace this design baseline with implementation-specific diagrams, schemas, examples, and measured SLOs as the capability matures.
 - Link the final implementation, migration revision, tests, dashboards, and runbook from this document.
 - Review this document whenever the public contract, ownership boundary, or recovery behavior changes.
+
+## Implemented CI/CD pipeline
+
+`.github/workflows/release.yml` is the release path for `staging` and `main`:
+
+1. Verify Python compilation, apply Alembic migrations to a disposable PostgreSQL service, and run the test suite.
+2. Build and publish the backend image to GHCR with both the commit tag and immutable digest.
+3. Scan the published digest with Trivy.
+4. On `staging`, call the staging deployment hook and require `status: "ok"` from `STAGING_HEALTH_URL`.
+5. On `main`, pause at the protected GitHub `production` environment, then call the production hook and require `status: "ok"` from `PRODUCTION_HEALTH_URL`.
+
+Configure these secrets in the GitHub environments:
+
+- `staging`: `RENDER_STAGING_DEPLOY_HOOK`, `STAGING_HEALTH_URL`
+- `production`: `RENDER_PRODUCTION_DEPLOY_HOOK`, `PRODUCTION_HEALTH_URL`
+
+The deployment target must consume the image reference sent in the hook payload, including its digest. A hook that ignores the image reference is not an immutable promotion and must be corrected before production use. Production environment reviewers provide the approval gate; rollback follows [ROLLBACK.md](ROLLBACK.md).

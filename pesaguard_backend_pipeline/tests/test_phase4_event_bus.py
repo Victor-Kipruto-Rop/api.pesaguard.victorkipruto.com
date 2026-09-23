@@ -28,6 +28,20 @@ def test_versioned_event_contract_and_topic_routing():
     with pytest.raises(EventContractError):
         build_event("unsupported.event", "tenant-a", "tx-1", {})
 
+def test_event_catalog_accepts_required_transaction_and_operational_events():
+    for event_type in (
+        "transaction.rejected",
+        "transaction.completed",
+        "reconciliation.started",
+        "reconciliation.exception.detected",
+        "fraud.analysis.started",
+        "fraud.anomaly.reviewed",
+        "notification.exhausted",
+        "batch.record.rejected",
+        "audit.event.created",
+    ):
+        assert build_event(event_type, "tenant-a", "tx-1", {}).event_type == event_type
+
 
 def test_first_class_event_contract_accepts_timestamp_and_preserves_lineage():
     event = validate_event({
@@ -187,6 +201,44 @@ def test_broker_unavailable_raises_without_acknowledging_event(monkeypatch):
     producer._circuit_breaker.failure_count = 0
     with pytest.raises(ConnectionError):
         producer.publish_transaction_event("mpesa.transactions.raw", {"TransID": "broker-down"})
+
+
+def test_batch_publish_preserves_per_message_delivery_results(monkeypatch):
+    import producer
+
+    class Future:
+        def __init__(self, error=None):
+            self.error = error
+
+        def get(self, timeout):
+            if self.error:
+                raise self.error
+            return object()
+
+    class BatchProducer:
+        def __init__(self):
+            self.sent = []
+
+        def send(self, topic, **kwargs):
+            self.sent.append((topic, kwargs["value"]))
+            return Future(TimeoutError("one item timed out") if len(self.sent) == 2 else None)
+
+        def flush(self, timeout):
+            return None
+
+    batch_producer = BatchProducer()
+    monkeypatch.setattr(producer._producer_manager, "get_producer", lambda: batch_producer)
+    monkeypatch.setattr(producer._circuit_breaker, "can_execute", lambda: True)
+    monkeypatch.setattr(producer._circuit_breaker, "record_success", lambda: None)
+    monkeypatch.setattr(producer._circuit_breaker, "record_failure", lambda: None)
+
+    results = producer.publish_transaction_batch_results(
+        "mpesa.transactions.raw",
+        [{"TransID": "tx-1"}, {"TransID": "tx-2"}, {"TransID": "tx-3"}],
+    )
+
+    assert results == [True, False, True]
+    assert [payload["TransID"] for _, payload in batch_producer.sent] == ["tx-1", "tx-2", "tx-3"]
 
 
 def test_network_failure_is_retried_then_dead_lettered():

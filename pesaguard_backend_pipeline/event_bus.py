@@ -12,6 +12,8 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Callable, Dict, Iterable, Optional
 
+from contract_versioning import validate_contract_version
+
 EVENT_TYPES = frozenset({
     "transaction.created",
     "transaction.received",
@@ -38,6 +40,26 @@ EVENT_TYPES = frozenset({
     "event.retry_scheduled",
     "system.event",
     "data_processing.event",
+    "transaction.rejected",
+    "transaction.completed",
+    "transaction.failed",
+    "reconciliation.requested",
+    "reconciliation.started",
+    "reconciliation.failed",
+    "reconciliation.exception.detected",
+    "reconciliation.exception.resolved",
+    "fraud.analysis.requested",
+    "fraud.analysis.started",
+    "fraud.analysis.completed",
+    "fraud.anomaly.detected",
+    "fraud.anomaly.reviewed",
+    "notification.retry",
+    "notification.exhausted",
+    "batch.import.started",
+    "batch.import.completed",
+    "batch.import.failed",
+    "batch.record.rejected",
+    "audit.event.created",
 })
 EVENT_VERSION = 1
 logger = logging.getLogger("pesaguard.event_bus")
@@ -285,6 +307,10 @@ class EventEnvelope:
             raise EventContractError("tenant_id, aggregate_id, and correlation_id are required")
         if not self.schema_version or not self.source or not self.producer:
             raise EventContractError("schema_version, source, and producer are required")
+        try:
+            validate_contract_version("event", self.schema_version)
+        except ValueError as exc:
+            raise EventContractError(str(exc)) from exc
         if not isinstance(self.payload, dict):
             raise EventContractError("payload must be an object")
         if not isinstance(self.metadata, dict):
@@ -342,7 +368,15 @@ def validate_event(value: EventEnvelope | Dict[str, Any]) -> EventEnvelope:
         return value
     if not isinstance(value, dict):
         raise EventContractError("event must be an envelope or object")
-    return EventEnvelope.from_dict(value)
+    try:
+        from schema_validation import validate_event_envelope
+        schema_value = dict(value)
+        if "occurred_at" not in schema_value and schema_value.get("timestamp"):
+            schema_value["occurred_at"] = schema_value["timestamp"]
+        validate_event_envelope(schema_value)
+        return EventEnvelope.from_dict(value)
+    except ValueError as exc:
+        raise EventContractError(str(exc)) from exc
 
 
 def build_event(

@@ -1,0 +1,18 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://pesaguard.example/schemas/pos-merchant-1.0.json",
+  "title": "PesaGuard POS or merchant transaction",
+  "type": "object",
+  "required": ["transaction_id", "amount", "merchant_id", "terminal_id"],
+  "properties": {
+    "transaction_id": {"type": "string", "minLength": 1, "maxLength": 255},
+    "amount": {"type": ["string", "number"], "pattern": "^[+]?[0-9]+(\\.[0-9]+)?$"},
+    "merchant_id": {"type": "string", "minLength": 1, "maxLength": 255},
+    "terminal_id": {"type": "string", "minLength": 1, "maxLength": 255},
+    "settlement_id": {"type": "string", "maxLength": 255},
+    "currency": {"type": "string", "pattern": "^[A-Z]{3}$"},
+    "timestamp": {"type": "string", "minLength": 1},
+    "transaction_type": {"type": "string", "minLength": 1}
+  },
+  "additionalProperties": true
+}

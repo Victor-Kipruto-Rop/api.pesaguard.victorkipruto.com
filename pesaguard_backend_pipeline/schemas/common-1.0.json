@@ -1,0 +1,13 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://pesaguard.example/schemas/common-1.0.json",
+  "$defs": {
+    "Identifier": {"type": "string", "minLength": 1, "maxLength": 255},
+    "Timestamp": {"type": "string", "format": "date-time"},
+    "Currency": {"type": "string", "pattern": "^[A-Z]{3}$"},
+    "Money": {"type": "string", "pattern": "^[+]?[0-9]+(\\.[0-9]{1,2})?$"},
+    "Tenant": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"},
+    "Metadata": {"type": "object", "additionalProperties": true},
+    "Pagination": {"type": "object", "required": ["page", "per_page", "total"], "properties": {"page": {"type": "integer", "minimum": 1}, "per_page": {"type": "integer", "minimum": 1, "maximum": 100}, "total": {"type": "integer", "minimum": 0}}, "additionalProperties": false}
+  }
+}

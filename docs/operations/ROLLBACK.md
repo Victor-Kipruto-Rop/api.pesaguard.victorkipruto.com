@@ -61,6 +61,16 @@ Use least privilege, short-lived credentials, hashed API keys, explicit scopes, 
 
 Monitor request success and latency, reconciliation health, database pool health, Kafka and outbox lag, retry and dead-letter rates, provider errors, audit delivery, and backup freshness. Every alert should identify an owner, a runbook, a severity, and a recovery target.
 
+## Release rollback procedure
+
+1. Stop promotion and record the failed release SHA, image digest, migration head, and health response.
+2. Confirm whether the failure is application-only or includes a schema change. Keep the database intact unless recovery requires a verified restore.
+3. Route traffic to the last known-good image and wait for `/health` to return `status: "ok"`.
+4. Verify authenticated tenant-scoped reads, webhook acceptance, idempotency, outbox drain, and consumer lag before reopening traffic.
+5. If a migration is incompatible, follow the migration-specific rollback or forward-fix plan; do not blindly downgrade production schema after writes have occurred.
+6. Monitor errors, latency, retries, dead letters, database locks, and tenant-isolation alerts through the rollback observation window.
+7. Preserve logs, traces, metrics, deployment metadata, and operator actions for the incident record.
+
 ## Validation
 
 At minimum, validate syntax and imports, focused unit behavior, cross-tenant isolation, migration compatibility, API contract behavior, and failure/retry paths. For integration changes, run the PostgreSQL, Redis, and Kafka checks when those services are available and record unavailable dependencies explicitly.

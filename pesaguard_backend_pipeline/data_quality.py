@@ -55,6 +55,39 @@ class DataQualityResult:
     def is_ok(self) -> bool:
         return self.status == DataQualityStatus.PASS
 
+    @property
+    def dimension_scores(self) -> Dict[str, float]:
+        """Return a bounded 0..1 score for every declared quality dimension."""
+        failed_dimensions = {failure.rule.dimension for failure in self.failures}
+        return {
+            dimension: 0.0 if dimension in failed_dimensions else 1.0
+            for dimension in DQ_DIMENSIONS
+        }
+
+    @property
+    def completeness(self) -> float:
+        return self.dimension_scores["completeness"]
+
+    @property
+    def uniqueness(self) -> float:
+        return self.dimension_scores["uniqueness"]
+
+    @property
+    def validity(self) -> float:
+        return self.dimension_scores["validity"]
+
+    @property
+    def consistency(self) -> float:
+        return self.dimension_scores["consistency"]
+
+    @property
+    def accuracy(self) -> float:
+        return self.dimension_scores["accuracy"]
+
+    @property
+    def timeliness(self) -> float:
+        return self.dimension_scores["timeliness"]
+
     def to_dict(self) -> Dict[str, Any]:
         return {
             "status": self.status,
@@ -196,6 +229,7 @@ def dq_report(result: DataQualityResult) -> Dict[str, Any]:
     return {
         "status": result.status,
         "dimensions": DQ_DIMENSIONS,
+        "dimension_scores": result.dimension_scores,
         "failures": result.to_dict()["failures"],
         "transaction_id": result.transaction_id,
         "tenant_id": result.tenant_id,

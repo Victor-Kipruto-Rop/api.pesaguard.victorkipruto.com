@@ -1,0 +1,11 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://pesaguard.example/schemas/reconciliation-1.0.json",
+  "$defs": {
+    "ReconciliationRequest": {"type": "object", "required": ["transaction_id"], "properties": {"transaction_id": {"$ref": "common-1.0.json#/$defs/Identifier"}, "provider_account_id": {"$ref": "common-1.0.json#/$defs/Identifier"}, "force": {"type": "boolean"}}, "additionalProperties": false},
+    "Variance": {"type": "object", "required": ["expected", "actual", "difference", "currency"], "properties": {"expected": {"$ref": "common-1.0.json#/$defs/Money"}, "actual": {"$ref": "common-1.0.json#/$defs/Money"}, "difference": {"$ref": "common-1.0.json#/$defs/Money"}, "currency": {"$ref": "common-1.0.json#/$defs/Currency"}}, "additionalProperties": false},
+    "Settlement": {"type": "object", "required": ["settlement_id", "settled_at", "amount", "currency"], "properties": {"settlement_id": {"$ref": "common-1.0.json#/$defs/Identifier"}, "settled_at": {"$ref": "common-1.0.json#/$defs/Timestamp"}, "amount": {"$ref": "common-1.0.json#/$defs/Money"}, "currency": {"$ref": "common-1.0.json#/$defs/Currency"}}, "additionalProperties": true},
+    "ReconciliationException": {"type": "object", "required": ["code", "message", "severity"], "properties": {"code": {"type": "string"}, "message": {"type": "string"}, "severity": {"type": "string", "enum": ["info", "warning", "critical"]}, "transaction_id": {"$ref": "common-1.0.json#/$defs/Identifier"}}, "additionalProperties": true},
+    "ReconciliationResult": {"type": "object", "required": ["transaction_id", "status"], "properties": {"transaction_id": {"$ref": "common-1.0.json#/$defs/Identifier"}, "status": {"type": "string", "enum": ["pending", "processing", "matched", "partial", "mismatch", "unmatched", "failed"]}, "variance": {"$ref": "#/$defs/Variance"}, "settlement": {"$ref": "#/$defs/Settlement"}, "exceptions": {"type": "array", "items": {"$ref": "#/$defs/ReconciliationException"}}}, "additionalProperties": true}
+  }
+}

@@ -12,6 +12,7 @@ import math
 import os
 import threading
 import time
+from pathlib import Path
 from datetime import datetime, timedelta, timezone
 from email.utils import parsedate_to_datetime
 from collections import Counter
@@ -1110,6 +1111,9 @@ def update_settings():
 
 @app.route("/openapi.json", methods=["GET"])
 def openapi_spec():
+    contract_path = Path(__file__).resolve().parents[2] / "docs" / "api" / "openapi.json"
+    return jsonify(json.loads(contract_path.read_text(encoding="utf-8"))), 200
+
     spec = {
         "openapi": "3.0.3",
         "info": {

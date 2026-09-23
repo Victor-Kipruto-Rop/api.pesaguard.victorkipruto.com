@@ -25,6 +25,7 @@ init_sentry(service="background_worker", provider="redis_rq")
 REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379/0")
 RQ_QUEUE_NAME = os.getenv("RQ_QUEUE_NAME", "transaction_events")
 DATABASE_URL = required_env("DATABASE_URL")
+OUTBOX_MAX_ATTEMPTS = max(1, int(os.getenv("OUTBOX_MAX_ATTEMPTS", "5")))
 
 # Global thread-safe engine for task-level database persistence
 if DATABASE_URL.startswith("sqlite"):
@@ -213,25 +214,49 @@ def replay_dead_letter_job(dead_letter_id: str, tenant_id: str) -> None:
 def drain_transaction_outbox(limit: int = 100) -> Dict[str, Any]:
     """Publish a bounded durable outbox batch and retain failures for replay."""
     from event_store import EventStore
-    from producer import publish_transaction_event
+    from producer import publish_transaction_batch_results
     from data_protection import unprotect_payload
 
     store = EventStore(database_url=DATABASE_URL)
     claimed = store.claim_outbox_batch(limit=limit)
     published = 0
     failed = 0
+
+    rows_by_topic: Dict[str, List[tuple[dict, dict]]] = {}
     for row in claimed:
         try:
-            publish_transaction_event(row["topic"], unprotect_payload(row["payload"] or {}))
-            store.mark_outbox_published(row["id"])
-            published += 1
+            payload = unprotect_payload(row["payload"] or {})
+            rows_by_topic.setdefault(row["topic"], []).append((row, payload))
         except Exception as exc:
             failed += 1
-            retry_seconds = min(30 * (2 ** max(row["attempts"] - 1, 0)), 3600)
-            store.mark_outbox_failed(row["id"], str(exc), retry_seconds=retry_seconds)
-            logger.exception("Transaction outbox publish failed for row=%s", row["id"])
+            _record_outbox_failure(store, row, exc)
+
+    for topic, topic_rows in rows_by_topic.items():
+        outcomes = publish_transaction_batch_results(topic, [payload for _, payload in topic_rows])
+        for (row, _), delivered in zip(topic_rows, outcomes):
+            if delivered:
+                store.mark_outbox_published(row["id"])
+                published += 1
+            else:
+                failed += 1
+                _record_outbox_failure(store, row, "batch delivery failed")
 
     return {"status": "ok" if failed == 0 else "partial_failure", "claimed": len(claimed), "published": published, "failed": failed}
+
+
+def _record_outbox_failure(store: Any, row: dict, error: Any) -> None:
+    if row["attempts"] >= OUTBOX_MAX_ATTEMPTS:
+        store.mark_outbox_dead_lettered(row["id"], str(error))
+        from metrics import record_pipeline_event
+        record_pipeline_event("dead_lettered", tenant_id=row.get("tenant_id", "default"))
+        logger.error("Transaction outbox row moved to dead letter after %s attempts: row=%s", row["attempts"], row["id"])
+    else:
+        retry_seconds = min(30 * (2 ** max(row["attempts"] - 1, 0)), 3600)
+        store.mark_outbox_failed(row["id"], str(error), retry_seconds=retry_seconds)
+        from metrics import record_event_retry, record_pipeline_event
+        record_event_retry()
+        record_pipeline_event("retried", tenant_id=row.get("tenant_id", "default"))
+    logger.error("Transaction outbox publish failed for row=%s: %s", row["id"], error)
 
 
 def enqueue_transaction_outbox_drain() -> Dict[str, Any]:

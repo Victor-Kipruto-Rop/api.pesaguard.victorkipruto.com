@@ -4,7 +4,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
 from event_store import EventStore, ProcessResult
-from models import Base, ProcessedTransaction, ReconciliationOutbox, Transaction, TransactionOutbox
+from models import Base, DeadLetter, ProcessedTransaction, ReconciliationOutbox, Transaction, TransactionOutbox
 
 
 def _payload(trans_id="tx-1"):
@@ -34,6 +34,7 @@ def test_accepted_transaction_and_outbox_are_committed_together(tmp_path):
         assert outbox.event_key
         assert outbox.status == "pending"
         assert outbox.payload["TransID"] == "tx-1"
+        assert outbox.payload["event_id"] == outbox.event_key
 
 
 def test_duplicate_transaction_does_not_create_second_outbox_row(tmp_path):
@@ -68,6 +69,28 @@ def test_outbox_claim_and_failure_release_are_replayable(tmp_path):
         assert row.status == "failed"
         assert row.attempts == 1
         assert row.last_error == "kafka unavailable"
+
+
+def test_exhausted_outbox_is_atomically_dead_lettered(tmp_path):
+    database_url = f"sqlite:///{tmp_path / 'dead_letter.db'}"
+    engine = create_engine(database_url)
+    Base.metadata.create_all(engine)
+
+    store = EventStore(database_url=database_url)
+    assert store.mark_processed(_payload(), tenant_id="tenant-a") is ProcessResult.STORED
+    claimed = store.claim_outbox_batch(limit=1)
+
+    store.mark_outbox_dead_lettered(claimed[0]["id"], "payload is corrupted")
+
+    with sessionmaker(bind=engine)() as session:
+        outbox = session.query(TransactionOutbox).one()
+        dead_letter = session.query(DeadLetter).one()
+        assert outbox.status == "dead_lettered"
+        assert outbox.locked_until is None
+        assert dead_letter.id == f"dl_outbox_{outbox.id}"
+        assert dead_letter.tenant_id == "tenant-a"
+        assert dead_letter.reason == "transaction_outbox_publish_exhausted"
+        assert dead_letter.attempts == 1
 
 
 def test_reconciliation_outbox_claim_publish_and_retry_are_durable(tmp_path):

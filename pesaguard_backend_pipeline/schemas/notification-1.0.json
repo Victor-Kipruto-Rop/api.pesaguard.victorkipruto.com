@@ -1,0 +1,11 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://pesaguard.example/schemas/notification-1.0.json",
+  "$defs": {
+    "NotificationRequest": {"type": "object", "required": ["tenant_id", "channel", "recipient", "message", "idempotency_key"], "properties": {"tenant_id": {"$ref": "common-1.0.json#/$defs/Tenant"}, "channel": {"type": "string", "enum": ["sms", "email", "webhook"]}, "recipient": {"type": "string"}, "message": {"type": "string", "maxLength": 10000}, "idempotency_key": {"$ref": "common-1.0.json#/$defs/Identifier"}}, "additionalProperties": true},
+    "NotificationResult": {"type": "object", "required": ["notification_id", "status"], "properties": {"notification_id": {"$ref": "common-1.0.json#/$defs/Identifier"}, "status": {"type": "string", "enum": ["queued", "sent", "failed", "exhausted"]}}, "additionalProperties": true},
+    "SMS": {"allOf": [{"$ref": "#/$defs/NotificationRequest"}, {"type": "object", "properties": {"channel": {"const": "sms"}, "recipient": {"type": "string", "pattern": "^\\+?[0-9]{8,15}$"}}}]},
+    "Email": {"allOf": [{"$ref": "#/$defs/NotificationRequest"}, {"type": "object", "properties": {"channel": {"const": "email"}, "recipient": {"type": "string", "format": "email"}}}]},
+    "Webhook": {"allOf": [{"$ref": "#/$defs/NotificationRequest"}, {"type": "object", "properties": {"channel": {"const": "webhook"}, "url": {"type": "string", "format": "uri"}}}]}
+  }
+}

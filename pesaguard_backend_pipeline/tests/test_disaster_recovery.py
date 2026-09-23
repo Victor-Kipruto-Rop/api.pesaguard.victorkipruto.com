@@ -63,3 +63,19 @@ def test_restore_validation_detects_integrity_violation(monkeypatch):
     assert result["status"] == "failed"
     assert result["constraints"] == 0
     assert result["indexes"] == 0
+
+
+def test_restore_drill_reports_validation_result(tmp_path, monkeypatch):
+    from pesaguard_backend_pipeline.operations import restore_drill
+
+    backup = tmp_path / "backup.sql.gz"
+    backup.write_bytes(b"backup")
+    output = tmp_path / "restore-drill.json"
+    monkeypatch.setattr(restore_drill.subprocess, "run", lambda *args, **kwargs: type("Result", (), {"returncode": 0, "stderr": ""})())
+    monkeypatch.setattr(restore_drill.validate_restore, "validate", lambda _url: {"status": "passed", "counts": {"transactions": 1}})
+
+    result = restore_drill.run_restore_drill(backup, "postgresql://restore:secret@localhost/isolated", output)
+
+    assert result["status"] == "passed"
+    assert result["validation"]["counts"]["transactions"] == 1
+    assert json.loads(output.read_text(encoding="utf-8"))["status"] == "passed"

@@ -56,6 +56,7 @@ class Transaction(Base):
         CheckConstraint("trans_amount > 0", name="ck_transactions_trans_amount_positive"),
         CheckConstraint("length(currency) = 3 AND currency = upper(currency)", name="ck_transactions_currency_iso"),
         CheckConstraint("status IN ('RECEIVED', 'VALIDATED', 'PROCESSING', 'RECONCILING', 'RECONCILED', 'FAILED', 'REJECTED')", name="ck_transactions_status"),
+        CheckConstraint("lifecycle_stage IN ('CREATED', 'INGESTED', 'VALIDATED', 'PROCESSED', 'STORED', 'CONSUMED', 'ARCHIVED', 'DELETED', 'QUARANTINED')", name="ck_transactions_lifecycle_stage"),
         CheckConstraint("version >= 1", name="ck_transactions_version_positive"),
         UniqueConstraint("tenant_id", "provider", "provider_transaction_id", name="uq_transaction_provider_reference"),
         UniqueConstraint("tenant_id", "provider", "external_reference", name="uq_transaction_external_reference"),
@@ -76,6 +77,9 @@ class Transaction(Base):
     trans_time = Column(String, nullable=False)  # Raw string timestamp format from Daraja
     raw_payload = Column(JSON, nullable=False)
     status = Column(String(32), nullable=False, default="RECEIVED", server_default="RECEIVED")
+    lifecycle_stage = Column(String(16), nullable=False, default="STORED", server_default="STORED")
+    archived_at = Column(DateTime(timezone=True), nullable=True)
+    archive_object_key = Column(String(1024), nullable=True)
     version = Column(Integer, nullable=False, default=1, server_default="1")
     created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), nullable=False)
 

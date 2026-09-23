@@ -119,8 +119,10 @@ def test_pitr_restore_requires_target_time_or_xid(tmp_path, monkeypatch):
     monkeypatch.setattr(backup_postgres, "DATABASE_URL", "postgresql://u:p@localhost:5432/db")
     monkeypatch.setattr(backup_postgres, "BACKUP_DIR", tmp_path)
 
-    backup = tmp_path / "pesaguard_20260913_120000.sql.gz"
-    backup.write_bytes(b"fake")
+    # Use a pg_basebackup-format artifact (.tar), not a pg_dump SQL archive,
+    # because PITR requires a base backup, not a dump.
+    backup = tmp_path / "pesaguard_20260913_120000.tar"
+    backup.write_bytes(b"fake base backup")
     backup_postgres._write_manifest(backup)
 
     with pytest.raises(SystemExit):
@@ -142,8 +144,9 @@ def test_pitr_restore_writes_recovery_config(tmp_path, monkeypatch):
     monkeypatch.setattr(backup_postgres, "PESAGUARD_WAL_ARCHIVE_DIR",
                         os.getenv("PESAGUARD_WAL_ARCHIVE_DIR"))
 
-    backup = tmp_path / "pesaguard_20260913_120000.sql.gz"
-    backup.write_bytes(b"fake")
+    # Use a pg_basebackup-format artifact (.tar) for PITR
+    backup = tmp_path / "pesaguard_20260913_120000.tar"
+    backup.write_bytes(b"fake base backup")
     backup_postgres._write_manifest(backup)
 
     # Mock restore_backup to avoid actually calling pg_restore
@@ -303,10 +306,10 @@ class TestRecoveryScenarios:
     def test_bad_migration_recovery(self, tmp_path, monkeypatch):
         """Bad migration: point-in-time recovery to before the migration."""
         monkeypatch_backup_env(tmp_path)
-        artifact = tmp_path / "pesaguard_20260913_120000.sql.gz"
-        artifact.write_bytes(gzip.compress(
-            b"-- PostgreSQL database dump\nCREATE TABLE t (id int);"
-        ))
+        # Use a pg_basebackup-format artifact (.tar) so PITR proceeds to
+        # the target-validation gate rather than the SQL-archive guard.
+        artifact = tmp_path / "pesaguard_20260913_120000.tar"
+        artifact.write_bytes(b"base backup snapshot")
         backup_postgres._write_manifest(artifact)
 
         # PITR should target the pre-migration timestamp

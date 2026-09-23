@@ -1,0 +1,12 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://pesaguard.example/schemas/transaction-1.0.json",
+  "$defs": {
+    "RawTransaction": {"type": "object", "required": ["TransID", "TransAmount", "TransTime", "MSISDN"], "properties": {"TransID": {"$ref": "common-1.0.json#/$defs/Identifier"}, "TransAmount": {"$ref": "common-1.0.json#/$defs/Money"}, "TransTime": {"type": "string"}, "MSISDN": {"type": "string"}}, "additionalProperties": true},
+    "ValidatedTransaction": {"type": "object", "required": ["transaction_id", "tenant_id", "provider", "amount", "currency"], "properties": {"transaction_id": {"$ref": "common-1.0.json#/$defs/Identifier"}, "tenant_id": {"$ref": "common-1.0.json#/$defs/Tenant"}, "provider": {"type": "string"}, "amount": {"$ref": "common-1.0.json#/$defs/Money"}, "currency": {"$ref": "common-1.0.json#/$defs/Currency"}}, "additionalProperties": true},
+    "CanonicalTransaction": {"$ref": "#/$defs/ValidatedTransaction"},
+    "NormalizedTransaction": {"$ref": "#/$defs/ValidatedTransaction"},
+    "EnrichedTransaction": {"allOf": [{"$ref": "#/$defs/ValidatedTransaction"}, {"type": "object", "properties": {"metadata": {"$ref": "common-1.0.json#/$defs/Metadata"}}}]},
+    "TransactionResult": {"type": "object", "required": ["transaction_id", "status"], "properties": {"transaction_id": {"$ref": "common-1.0.json#/$defs/Identifier"}, "status": {"type": "string"}, "duplicate": {"type": "boolean"}, "idempotency_key": {"$ref": "common-1.0.json#/$defs/Identifier"}}, "additionalProperties": true}
+  }
+}

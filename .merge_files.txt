@@ -38,7 +38,7 @@ pesaguard_backend_pipeline/init_db.py
 pesaguard_backend_pipeline/metrics.py
 pesaguard_backend_pipeline/models.py
 pesaguard_backend_pipeline/observability.py
-pesaguard_backend_pipeline/operations/backup_postgres.py
+pesaguard_backend_pipeline/backup_postgres.py
 pesaguard_backend_pipeline/operations/ground_truth_certification.py
 pesaguard_backend_pipeline/operations/run_postgres_load_test.py
 pesaguard_backend_pipeline/operations/scheduled_reports.py

@@ -31,7 +31,7 @@ def test_all_source_adapters_share_one_envelope_contract():
         "mpesa": mpesa_payload(),
         "airtel-money": {"transaction_id": "airtel-1", "amount": "4.25", "account_id": "airtel-acct"},
         "bank": {"transaction_id": "bank-1", "amount": "8.00", "account_id": "bank-acct"},
-        "pos": {"transaction_id": "pos-1", "amount": "2.00", "account_id": "pos-acct"},
+        "pos": {"transaction_id": "pos-1", "amount": "2.00", "account_id": "pos-acct", "merchant_id": "merchant-1", "terminal_id": "terminal-1"},
         "csv": {"transaction_id": "csv-1", "amount": "3.00", "account_id": "file-1"},
         "external-api": {"transaction_id": "api-1", "amount": "5.00", "account_id": "api-1"},
         "webhook": {"transaction_id": "hook-1", "amount": "6.00", "account_id": "hook-1"},

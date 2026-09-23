@@ -45,6 +45,8 @@ PesaGuard currently runs a Flask and SQLAlchemy backend with PostgreSQL as the p
 6. Publish or enqueue work through the outbox or worker boundary.
 7. Reconcile, notify, measure, and expose a traceable result.
 
+Before implementation and review, apply the [Feature Design Checklist](FEATURE_DESIGN_CHECKLIST.md) to make subsystem ownership, state, failure behavior, scale, observability, deployment, and recovery explicit.
+
 ## Interfaces and invariants
 
 - Public API routes belong under `/api/v1` unless a documented compatibility alias exists.

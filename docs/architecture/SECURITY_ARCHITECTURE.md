@@ -57,6 +57,28 @@ PesaGuard currently runs a Flask and SQLAlchemy backend with PostgreSQL as the p
 
 Use least privilege, short-lived credentials, hashed API keys, explicit scopes, expiry, revocation, rotation, and last-used metadata. Redact sensitive fields at logging boundaries. Apply retention and archival policies by tenant, legal hold, and residency requirements.
 
+## Tenant isolation invariant
+
+The authenticated principal is the source of tenant identity for user-facing operations. A request-supplied `tenant_id` is only a scope selector and must match a tenant the principal is authorized to access; it must never override the principal's tenant. Route parameters, query parameters, request bodies, cache keys, database predicates, events, exports, dead-letter replay, and metrics must preserve that scope.
+
+Every tenant-scoped read or write must satisfy all of the following:
+
+- authentication and authorization are evaluated before data access
+- the tenant predicate is included in the database query or mutation
+- cross-tenant references are rejected rather than silently redirected
+- audit and security events identify the authorized tenant and actor without storing secrets
+- tests prove that a principal from tenant A cannot read or mutate tenant B data
+
+## Data protection and access
+
+- PostgreSQL is the authoritative store; production access is through controlled service identities and audited operator roles, not shared credentials.
+- Raw payloads and dead-letter payloads are protected at rest; logs, metrics, traces, and Sentry context contain identifiers and hashes rather than payment secrets or full payloads.
+- Redis values are treated as disposable and non-authoritative. Cache keys and queue commands still carry tenant scope, and Redis loss must not bypass authorization or lose durable work.
+- Kafka events and object-storage inputs follow tenant-aware retention and access policies. Replay tools must require an authorized tenant scope.
+- Retention cleanup is tenant-aware and must respect legal holds, residency, and documented financial retention periods.
+
+Security review questions for every new data path are: who can access it, which system owns it, how it is encrypted, what is logged, how tenant scope is enforced, and when it is deleted.
+
 ## Operations
 
 Monitor request success and latency, reconciliation health, database pool health, Kafka and outbox lag, retry and dead-letter rates, provider errors, audit delivery, and backup freshness. Every alert should identify an owner, a runbook, a severity, and a recovery target.

@@ -67,7 +67,7 @@ At minimum, validate syntax and imports, focused unit behavior, cross-tenant iso
 
 ## Open work
 
-- Restore drills use `pesaguard_backend_pipeline/operations/run_restore_drill.py` and an isolated target database.
+- Restore drills use `pesaguard_backend_pipeline/operations/restore_drill.py` and an isolated target database. The `restore_drill` CI job automates this with a self-contained PostgreSQL container.
 - Example: `python pesaguard_backend_pipeline/operations/run_restore_drill.py BACKUP --target-database-url postgresql://.../pesaguard_restore --sentinel-sql "SELECT count(*) FROM transactions"`.
 - The drill writes `restore_drill_result.json` and fails unless restore and sentinel verification both succeed.
-- Pilot targets are RPO <= 24 hours and RTO <= 4 hours; record elapsed restore time and sentinel output with each quarterly drill.
+- Targets are RPO near-zero for committed financial transactions and RTO < 15 minutes; record elapsed restore time and validation output with each quarterly drill and each CI run.
