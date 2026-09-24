@@ -1,0 +1,126 @@
+name: Sync docs
+
+# Connects this repository to docs.pesaguard.victorkipruto.com without a docs
+# backend. The docs site is static; its OpenAPI spec is generated from this
+# repository's registered routes by scripts that live in the docs repository.
+#
+#   notify-docs   tells the docs repo to regenerate its API reference now
+#                 (docs repo: .github/workflows/sync-openapi.yml)
+#   refresh-spec  regenerates docs/api/openapi.implemented.json, the file served
+#                 at /openapi.json, and opens a pull request if it changed
+#
+# Setup (one time)
+#   1. Secret DOCS_DISPATCH_TOKEN: a fine-grained personal access token with
+#      "Contents: read and write" on the docs repository only. Without it,
+#      notify-docs is skipped and the docs repo syncs on its daily schedule.
+#   2. Settings > Actions > General > "Allow GitHub Actions to create and
+#      approve pull requests" enabled for this repository.
+#
+# Pull requests opened with the default GITHUB_TOKEN do not start other
+# workflows, so the refresh PR shows no CI checks; it changes one generated
+# JSON file.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "pesaguard_backend_pipeline/**"
+      - "!pesaguard_backend_pipeline/tests/**"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: sync-docs
+  cancel-in-progress: false
+
+env:
+  DOCS_REPO: Victor-Kipruto-Rop/docs.pesaguard.victorkipruto.com
+
+jobs:
+  notify-docs:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Ask the docs repo to regenerate its API reference
+        env:
+          DOCS_DISPATCH_TOKEN: ${{ secrets.DOCS_DISPATCH_TOKEN }}
+        run: |
+          if [ -z "$DOCS_DISPATCH_TOKEN" ]; then
+            echo "::notice::DOCS_DISPATCH_TOKEN is not set; the docs repo will pick this change up on its daily sync."
+            exit 0
+          fi
+          curl -fsS -X POST \
+            -H "Authorization: Bearer $DOCS_DISPATCH_TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/${DOCS_REPO}/dispatches" \
+            -d "{\"event_type\":\"backend-updated\",\"client_payload\":{\"sha\":\"${GITHUB_SHA}\"}}"
+          echo "Dispatched backend-updated to ${DOCS_REPO} for ${GITHUB_SHA}"
+
+  refresh-spec:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check out the docs repo (generator scripts and hand-written base)
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.DOCS_REPO }}
+          path: docs-site
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: pesaguard_backend_pipeline/requirements.txt
+
+      - name: Install dependencies
+        # jsonschema is imported by the app but is not in requirements.txt;
+        # ci.yml installs it separately at this same pin.
+        run: |
+          pip install -r pesaguard_backend_pipeline/requirements.txt
+          pip install jsonschema==4.23.0
+
+      - name: Generate the implemented spec from the registered routes
+        env:
+          DATABASE_URL: sqlite:////tmp/pesaguard-spec.db
+          PESAGUARD_API_URL: https://api.pesaguard.victorkipruto.com
+        run: python docs-site/scripts/generate-openapi.py . --out /tmp/openapi.implemented.json
+
+      - name: Replace the committed copy if the content changed
+        run: |
+          python - <<'PY'
+          import json, shutil
+
+          NEW = "/tmp/openapi.implemented.json"
+          CUR = "docs/api/openapi.implemented.json"
+
+          def load(path):
+              doc = json.load(open(path, encoding="utf-8"))
+              doc["info"].get("x-generated-from", {}).pop("commit", None)  # stamp is not content
+              return doc
+
+          if load(NEW) == load(CUR):
+              print("openapi.implemented.json: no content change")
+          else:
+              shutil.copyfile(NEW, CUR)
+              print("openapi.implemented.json: updated")
+          PY
+
+      - name: Open or update the refresh pull request
+        uses: peter-evans/create-pull-request@v7
+        with:
+          branch: sync/openapi-implemented
+          delete-branch: true
+          add-paths: docs/api/openapi.implemented.json
+          commit-message: "Refresh docs/api/openapi.implemented.json from registered routes"
+          title: "Refresh implemented OpenAPI spec"
+          body: |
+            `docs/api/openapi.implemented.json` is what `/openapi.json` serves. It was
+            regenerated from the routes registered at `${{ github.sha }}`, using
+            `scripts/generate-openapi.py` from the docs repository.
+
+            The hand-maintained planned contract (`docs/api/openapi.json`, served at
+            `/openapi.contract.json`) is not touched.
+          labels: openapi, automated
