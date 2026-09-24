@@ -149,6 +149,22 @@ def test_dashboard_exposes_openapi_docs(dashboard_app):
     assert b"PesaGuard Dashboard API" in docs_response.data
 
 
+def test_dashboard_serves_implemented_spec_and_planned_contract_separately(dashboard_app):
+    client, _ = dashboard_app
+
+    implemented = client.get("/openapi.json").get_json()
+    contract_response = client.get("/openapi.contract.json")
+    assert contract_response.status_code == 200
+    contract = contract_response.get_json()
+
+    # /openapi.json describes what is registered today; the contract also names
+    # endpoints that are not implemented yet, so the two must not be the same file.
+    assert implemented["info"]["version"] != contract["info"]["version"]
+    assert "/discrepancies" in implemented["paths"]
+    assert "/fraud/analyse" in contract["paths"]
+    assert "/fraud/analyse" not in implemented["paths"]
+
+
 def test_dashboard_session_factory_routes_reads_to_replica(monkeypatch):
     with tempfile.TemporaryDirectory() as tmpdir:
         primary_path = os.path.join(tmpdir, "primary.db")

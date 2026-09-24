@@ -1109,98 +1109,31 @@ def update_settings():
     return jsonify(updated_settings), 200
 
 
+_API_SPEC_DIR = Path(__file__).resolve().parents[2] / "docs" / "api"
+
+
+def _load_spec(filename: str):
+    return jsonify(json.loads((_API_SPEC_DIR / filename).read_text(encoding="utf-8"))), 200
+
+
 @app.route("/openapi.json", methods=["GET"])
 def openapi_spec():
-    contract_path = Path(__file__).resolve().parents[2] / "docs" / "api" / "openapi.json"
-    return jsonify(json.loads(contract_path.read_text(encoding="utf-8"))), 200
+    """Implemented API surface, generated from the registered routes.
 
-    spec = {
-        "openapi": "3.0.3",
-        "info": {
-            "title": "PesaGuard Dashboard & Reconciliation API",
-            "version": "2.0.0",
-            "description": "Enterprise-grade operational telemetry and reconciliation endpoints.",
-        },
-        "security": [{"bearerAuth": []}],
-        "components": {
-            "securitySchemes": {
-                "bearerAuth": {"type": "http", "scheme": "bearer", "bearerFormat": "JWT"},
-            },
-            "responses": {
-                "BadRequest": {"description": "Invalid request or query parameter."},
-                "Unauthorized": {"description": "Authentication failed."},
-                "Forbidden": {"description": "Insufficient permissions or tenant scope."},
-                "RateLimited": {"description": "Rate limit exceeded."},
-            },
-        },
-        "paths": {
-            "/tenant/current": {
-                "get": {"summary": "Get current tenant configuration", "responses": {"200": {"description": "Tenant configuration"}}},
-            },
-            "/tenant/current/locale": {
-                "get": {"summary": "Get effective tenant locale", "responses": {"200": {"description": "Locale configuration"}}},
-                "post": {"summary": "Update tenant locale", "responses": {"200": {"description": "Locale updated"}}},
-            },
-            "/tenant/current/user-locale": {
-                "post": {"summary": "Set or clear a user locale override", "responses": {"200": {"description": "User locale updated"}}},
-            },
-            "/providers": {
-                "get": {"summary": "List payment providers", "responses": {"200": {"description": "Provider list"}}},
-                "post": {"summary": "Register a payment provider", "responses": {"201": {"description": "Provider registered"}}},
-            },
-            "/providers/{provider_id}": {
-                "get": {"summary": "Get provider details", "responses": {"200": {"description": "Provider details"}}},
-                "patch": {"summary": "Update provider configuration", "responses": {"200": {"description": "Provider updated"}}},
-            },
-            "/providers/{provider_id}/connection": {
-                "post": {"summary": "Update provider connection status", "responses": {"200": {"description": "Connection status updated"}}},
-            },
-            "/providers/{provider_id}/health": {
-                "post": {"summary": "Update provider health status", "responses": {"200": {"description": "Health status updated"}}},
-            },
-            "/discrepancies": {
-                "get": {"summary": "List discrepancies with advanced filters", "responses": {"200": {"description": "Paginated list"}}},
-            },
-            "/discrepancies/{discrepancy_id}/resolve": {
-                "post": {"summary": "Resolve single discrepancy", "responses": {"200": {"description": "Successfully resolved"}}},
-            },
-            "/discrepancies/bulk-resolve": {
-                "post": {"summary": "Bulk resolve discrepancies", "responses": {"200": {"description": "Batch operation completed"}}},
-            },
-            "/api/v1/communications/templates": {
-                "get": {"summary": "List tenant communication templates", "responses": {"200": {"description": "Template versions"}}},
-                "post": {"summary": "Create a draft communication template", "responses": {"201": {"description": "Template created"}}},
-            },
-            "/api/v1/communications/templates/{template_id}/approve": {
-                "post": {"summary": "Approve a communication template version", "responses": {"200": {"description": "Template approved"}}},
-            },
-            "/api/v1/communications/preferences/{recipient}": {
-                "put": {"summary": "Update recipient preferences and quiet hours", "responses": {"200": {"description": "Preferences updated"}}},
-            },
-            "/api/v1/communications/consent/{recipient}": {
-                "put": {"summary": "Grant or revoke channel consent", "responses": {"200": {"description": "Consent updated"}}},
-            },
-            "/api/v1/communications/otp": {
-                "post": {"summary": "Issue an OTP challenge", "responses": {"202": {"description": "Challenge queued"}}},
-            },
-            "/api/v1/communications/otp/{challenge_id}/verify": {
-                "post": {"summary": "Verify an OTP challenge", "responses": {"200": {"description": "OTP verified"}, "401": {"description": "OTP rejected"}}},
-            },
-            "/api/v1/communications/campaigns": {
-                "post": {"summary": "Create a bulk or scheduled campaign", "responses": {"202": {"description": "Campaign queued"}}},
-            },
-            "/api/v1/communications/analytics": {
-                "get": {"summary": "Get tenant communication delivery analytics", "responses": {"200": {"description": "Status and channel counts"}}},
-            },
-            "/api/v1/communications/search": {
-                "get": {"summary": "Search tenant notifications", "responses": {"200": {"description": "Matching notifications"}}},
-            },
-            "/api/v1/communications/export": {
-                "get": {"summary": "Export tenant communications as CSV", "responses": {"200": {"description": "CSV export"}}},
-            },
-        },
-    }
-    return jsonify(spec), 200
+    docs/api/openapi.implemented.json is refreshed by the sync-docs workflow
+    (scripts live in the docs repository) and mirrors what the docs site
+    publishes at api-reference/openapi.json.
+    """
+    return _load_spec("openapi.implemented.json")
+
+
+@app.route("/openapi.contract.json", methods=["GET"])
+def openapi_contract():
+    """Target public contract, including endpoints not implemented yet.
+
+    Hand-maintained; guarded by the breaking-change gate in CI.
+    """
+    return _load_spec("openapi.json")
 
 
 @app.route("/docs", methods=["GET"])
