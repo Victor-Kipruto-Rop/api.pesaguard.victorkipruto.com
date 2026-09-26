@@ -4,6 +4,7 @@ import tempfile
 
 import pytest
 from auth_rbac import AuthRBAC
+from auth_seed import seed_account
 
 
 @pytest.fixture()
@@ -17,7 +18,12 @@ def dashboard_app(monkeypatch):
         app_2 = importlib.reload(app_2)
         app_2.Base.metadata.create_all(app_2.engine)
         from auth_rbac import _RevocationBase
+        from action_audit import ActionAuditEntry
+
         _RevocationBase.metadata.create_all(app_2.primary_engine)
+        # .metadata, not .__table__: resolve/bulk-resolve also write to
+        # AuditOutboxEntry (transactional outbox), sharing this declarative base.
+        ActionAuditEntry.metadata.create_all(app_2.primary_engine, checkfirst=True)
         app_2.app.config.update(TESTING=True)
 
         session = app_2.SessionLocal()
@@ -63,7 +69,14 @@ def dashboard_app(monkeypatch):
 
 
 @pytest.fixture()
-def dashboard_auth_token():
+def dashboard_auth_token(dashboard_app):
+    _, app_module = dashboard_app
+    seed_account(
+        app_module.SessionLocal,
+        user_id="test-admin",
+        tenant_id="tenant-a",
+        roles=["admin"],
+    )
     return AuthRBAC.generate_token(
         user_id="test-admin",
         username="admin",
@@ -74,10 +87,7 @@ def dashboard_auth_token():
 
 def test_dashboard_filters_and_resolves_discrepancies(dashboard_app, dashboard_auth_token):
     client, app_module = dashboard_app
-    
-    # Pre-create tables
-    from action_audit import ActionAuditEntry
-    ActionAuditEntry.__table__.create(app_module.primary_engine, checkfirst=True)
+    # Audit tables are created once by the dashboard_app fixture.
 
     response = client.get(
         "/discrepancies?status=missing_payment",
@@ -395,22 +405,7 @@ def test_replica_health_circuit_recovers_after_probe():
 
 def test_locale_lookup_rejects_unknown_or_cross_user_ids(dashboard_app, dashboard_auth_token):
     client, app_module = dashboard_app
-    from models import UserAccount
-
-    session = app_module.SessionLocal(read_only=False)
-    try:
-        session.add(UserAccount(
-            id="test-admin",
-            tenant_id="tenant-a",
-            username="admin",
-            roles=["admin"],
-            permissions=[],
-            status="active",
-            authorization_version=1,
-        ))
-        session.commit()
-    finally:
-        session.close()
+    # dashboard_auth_token already seeds a UserAccount for "test-admin"/"tenant-a".
 
     unknown = client.get(
         "/tenant/current/locale?user_id=missing-user",

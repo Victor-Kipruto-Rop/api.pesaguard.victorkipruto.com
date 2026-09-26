@@ -65,7 +65,11 @@ def _json_logs(caplog):
 
 def test_gateway_to_notification_trace_survives_every_boundary(monkeypatch, caplog, gateway):
     caplog.set_level(logging.INFO)
-    transaction_id = f"e2e-trace-{uuid.uuid4().hex[:10]}"
+    # normalize_identifier() (ingestion.py) upper-cases every provider transaction
+    # id on the way in, so the id used throughout this test must already be
+    # upper-case or the "PostgreSQL boundary" query below won't find the row
+    # the gateway actually wrote.
+    transaction_id = f"E2E-TRACE-{uuid.uuid4().hex[:10].upper()}"
     trace_id = uuid.uuid4().hex
     correlation_id = f"corr-{trace_id[:12]}"
     payload = {

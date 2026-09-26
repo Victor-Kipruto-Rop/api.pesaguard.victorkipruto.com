@@ -7,6 +7,23 @@ import pytest
 sys.path.append(os.path.join(os.path.dirname(__file__), ".."))
 
 from shared.daraja.auth_client import DarajaAuthClient
+from shared.daraja.oauth import DarajaOAuth
+
+
+@pytest.fixture(autouse=True)
+def no_durable_oauth_cache(monkeypatch):
+    """Keep these tests hermetic against a real REDIS_URL in the environment.
+
+    DarajaOAuth durably caches tokens in Redis, keyed by ``base_url:client_id``
+    (tenant_id is not part of that key). Both tests below use the same
+    placeholder ``consumer_key="k"``, so with a live Redis they read back each
+    other's cached token instead of driving the DummySession these tests
+    define -- passing or failing depending on suite run order rather than on
+    the caching/refresh logic under test. Two real tenants would never share a
+    live consumer_key, so this collision is a test fixture artifact, not a
+    production concern; disable the durable cache here rather than change it.
+    """
+    monkeypatch.setattr(DarajaOAuth, "_get_redis_client", lambda self: None)
 
 
 class DummyResponse:

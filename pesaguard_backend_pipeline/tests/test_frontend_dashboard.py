@@ -104,7 +104,7 @@ def test_app_tenant_display_only():
     # stays server-side (product_routes filters every query by tenant_id()).
     assert "decodeTenant" in js
     assert "filter_by(tenant_id" in (Path(__file__).resolve().parent.parent
-                                     / "pesaguard_backend_pipeline" / "communications"
+                                     / "communications"
                                      / "product_routes.py").read_text()
 
 

@@ -13,6 +13,9 @@ def webhook_client(monkeypatch):
         monkeypatch.setenv("DATABASE_URL", f"sqlite:///{os.path.join(tmpdir, 'pesaguard_test.db')}")
         monkeypatch.setenv("DARAJA_ALLOWED_IPS", "127.0.0.1")
         monkeypatch.setenv("DARAJA_SHARED_SECRET", "test-secret")
+        # The webhook now refuses to process a callback for an unconfigured
+        # tenant (see app.py's TENANT_ID check); this suite is single-tenant.
+        monkeypatch.setenv("TENANT_ID", "tenant-a")
         
         # Import and reload app with test DB
         import app
