@@ -1,11 +1,22 @@
-# Web Framework & WSGI Server
+# PesaGuard runtime dependencies.
+#
+# Single source of truth: the Docker images (infra/docker/Dockerfile*), the
+# release workflow and CI all install this file. Test-only tools live in
+# requirements-dev.txt so they are not shipped in the image.
+#
+# The former requirements_1/2/3.txt split files were removed; they had drifted
+# from this file (jsonschema was only in _3, fastapi/uvicorn only here).
+
+# Web Framework & Application Server
 Flask==3.1.3
 gunicorn==23.0.0
-fastapi==0.115.6
+# ASGI control plane (pesaguard_backend_pipeline.fastapi_app) that mounts the Flask app.
+# fastapi >= 0.140 pulls a patched starlette (the 0.41.x line has open advisories).
+fastapi==0.141.1
 uvicorn[standard]==0.34.0
 
 # Streaming & Event Ingestion
-# NOTE: kafka-python-ng is the actively maintained, drop-in replacement 
+# NOTE: kafka-python-ng is the actively maintained, drop-in replacement
 # for legacy kafka-python (which is unmaintained and broken on Python 3.12+).
 kafka-python-ng==2.2.3
 
@@ -20,18 +31,15 @@ rq==2.1.0
 # Environment, Configuration & Serialization
 python-dotenv==1.2.2
 PyYAML==6.0.2
+jsonschema==4.23.0
 
 # HTTP Networking & Security
 requests==2.33.0
 PyJWT==2.13.0
-cryptography==46.0.5
+cryptography==50.0.1
 python-dateutil==2.9.0.post0
 tzdata==2025.2
 
 # Telemetry & Observability
 prometheus-client==0.21.1
 sentry-sdk[flask]==2.19.2
-
-# Testing & CI Suite
-pytest==9.0.3
-httpx==0.28.1

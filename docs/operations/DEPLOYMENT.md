@@ -2,7 +2,7 @@
 
 ## Runtime packaging
 
-The repository includes Docker assets under `docker/` and infrastructure templates under `infra/`. The Python backend dependencies are managed through multiple requirement snapshots in the `pesaguard_backend_pipeline/` package (`requirements.txt`, `requirements_1.txt`, `requirements_2.txt`, `requirements_3.txt`).
+The repository includes Docker assets under `docker/` and infrastructure templates under `infra/`. The Python backend dependencies are pinned in `pesaguard_backend_pipeline/requirements.txt`, which the Docker images, the release workflow and CI all install. Test tooling lives in `requirements-dev.txt` and is not shipped in the images.
 
 ## Local development
 
