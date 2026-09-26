@@ -180,8 +180,14 @@ class ReconciliationEngine:
         return max(Decimal("0.01"), abs(amount) * self.tolerance_percent / Decimal("100"))
 
     def _time_matches(self, transaction: Dict[str, Any], record: Dict[str, Any]) -> bool:
-        if transaction["timestamp"] is None or record["timestamp"] is None:
+        if transaction["timestamp"] is None:
             return False
+        if record["timestamp"] is None:
+            # The internal ledger record has no timestamp yet (e.g. it has not
+            # finished syncing). That is missing data, not evidence the two
+            # events happened far apart, so it must not sink an otherwise
+            # exact reference+amount match to MISMATCH.
+            return True
         return abs((transaction["timestamp"] - record["timestamp"]).total_seconds()) <= self.window_seconds
 
     def _amount_matches(self, transaction: Dict[str, Any], record: Dict[str, Any]) -> bool:

@@ -6,7 +6,7 @@
   "required": ["transaction_id", "amount", "account_id"],
   "properties": {
     "transaction_id": {"type": "string", "minLength": 1, "maxLength": 255},
-    "amount": {"type": ["string", "number"], "pattern": "^[+-]?[0-9]+(\\.[0-9]+)?$"},
+    "amount": {"type": ["string", "number"], "pattern": "^[+-]?(?:[0-9]+|[0-9]{1,3}(?:,[0-9]{3})+)(?:\\.[0-9]+)?$"},
     "account_id": {"type": "string", "minLength": 1, "maxLength": 255},
     "balance": {"type": ["string", "number", "null"]},
     "currency": {"type": "string", "pattern": "^[A-Z]{3}$"},
