@@ -1,0 +1,99 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<meta name="description" content="Internal console for inspecting communication delivery status and templates. Read-only operations tooling; does not send messages.">
+<!--
+  Real enforcement of these directives is the response header nginx sends for
+  this page (see frontend/nginx.conf); browsers ignore frame-ancestors and a
+  few other directives when only declared here. The meta tag is kept as a
+  second, visible copy of the policy for anyone reading the page source.
+-->
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self'; connect-src 'self' https:; base-uri 'none'; form-action 'none'; frame-ancestors 'none'">
+<title>PesaGuard Communications Console</title>
+<style>
+  :root { color-scheme: light dark; --pg-border: #8888; }
+  .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0,0,0,0); white-space: nowrap; border: 0; }
+  .skip-link { position: absolute; left: -999px; top: 0; padding: 0.5em 1em; background: Canvas; color: CanvatText; z-index: 10; }
+  .skip-link:focus { left: 0.5em; top: 0.5em; }
+  body { font: 14px/1.4 system-ui, sans-serif; margin: 0 auto; max-width: 72rem; padding: 1rem; }
+  header, .panel { margin-bottom: 1rem; }
+  fieldset { border: 1px solid var(--pg-border); border-radius: 6px; }
+  label { display: inline-block; margin-right: 0.5rem; }
+  table { border-collapse: collapse; width: 100%; }
+  th, td { border: 1px solid var(--pg-border); padding: 0.4rem 0.6rem; text-align: left; font-size: 0.9em; }
+  #connection-error:empty, #tenant-banner:empty { display: none; }
+  #connection-error { color: #b00020; }
+  .footnote { font-size: 0.85em; opacity: 0.8; }
+</style>
+</head>
+<body>
+<a class="skip-link" href="#main">Skip to main content</a>
+
+<header>
+  <a href="/">&larr; Back</a>
+  <h1>Communications Console</h1>
+  <div id="tenant-banner" role="status" aria-live="polite" aria-atomic="true"></div>
+  <span id="session-state">disconnected</span>
+  <div id="connection-error" role="alert" aria-live="assertive"></div>
+</header>
+
+<main id="main">
+  <section class="panel" aria-labelledby="connect-heading">
+    <fieldset>
+      <legend id="connect-heading">Connection</legend>
+      <label for="api-base">API base URL</label>
+      <input id="api-base" type="url" autocomplete="off" placeholder="https://api.pesaguard.victorkipruto.com" value="https://api.pesaguard.victorkipruto.com">
+      <label for="token">Access token</label>
+      <input id="token" type="password" autocomplete="off" aria-describedby="token-hint">
+      <span id="token-hint" class="sr-only">Held in memory for this tab only; never written to storage.</span>
+      <button id="connect" type="button">Connect</button>
+      <button id="disconnect" type="button">Disconnect</button>
+      <button id="clear-token" type="button">Clear token</button>
+    </fieldset>
+  </section>
+
+  <section class="panel" aria-labelledby="filter-heading">
+    <fieldset>
+      <legend id="filter-heading">Messages</legend>
+      <label for="search">Search recipient</label>
+      <input id="search" type="search" autocomplete="off">
+      <label for="status">Filter by status</label>
+      <select id="status">
+        <option value="">Any status</option>
+        <option value="created">created</option>
+        <option value="queued">queued</option>
+        <option value="processing">processing</option>
+        <option value="accepted">accepted</option>
+        <option value="submitted">submitted</option>
+        <option value="sent">sent</option>
+        <option value="delivered">delivered</option>
+        <option value="opened">opened</option>
+        <option value="clicked">clicked</option>
+        <option value="bounced">bounced</option>
+        <option value="complained">complained</option>
+        <option value="failed">failed</option>
+        <option value="rejected">rejected</option>
+        <option value="expired">expired</option>
+        <option value="cancelled">cancelled</option>
+        <option value="retrying">retrying</option>
+        <option value="dead_letter">dead_letter</option>
+      </select>
+      <button id="refresh" type="button">Refresh</button>
+      <button id="reload" type="button">Reload all</button>
+      <button id="load-templates" type="button">Load templates</button>
+    </fieldset>
+    <p class="footnote">Exporting delivery data is disabled in this dashboard; use the audited export API, which requires a separate export permission.</p>
+  </section>
+
+  <section class="panel" aria-labelledby="results-heading">
+    <h2 id="results-heading" class="sr-only">Results</h2>
+    <div id="results" aria-busy="false"></div>
+  </section>
+</main>
+
+<script src="app.js"></script>
+</body>
+</html>

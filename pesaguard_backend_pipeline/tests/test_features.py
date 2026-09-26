@@ -17,6 +17,7 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 from auth_rbac import AuthRBAC
+from auth_seed import seed_account
 
 
 @pytest.fixture
@@ -37,7 +38,9 @@ def test_client(monkeypatch):
         from auth_rbac import _RevocationBase
 
         _RevocationBase.metadata.create_all(app_2.primary_engine)
-        ActionAuditEntry.__table__.create(app_2.primary_engine, checkfirst=True)
+        # .metadata, not .__table__: bulk_resolve/resolve_discrepancy also write
+        # to AuditOutboxEntry (transactional outbox), sharing this declarative base.
+        ActionAuditEntry.metadata.create_all(app_2.primary_engine, checkfirst=True)
         app_2.app.config.update(TESTING=True)
 
         session = app_2.SessionLocal()
@@ -89,6 +92,12 @@ def test_client(monkeypatch):
         token = AuthRBAC.generate_token(
             user_id="features-admin",
             username="features-admin",
+            tenant_id="default",
+            roles=["operations"],
+        )
+        seed_account(
+            app_2.SessionLocal,
+            user_id="features-admin",
             tenant_id="default",
             roles=["operations"],
         )

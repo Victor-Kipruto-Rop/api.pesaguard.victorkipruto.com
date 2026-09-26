@@ -1734,9 +1734,12 @@ def bulk_resolve_discrepancies():
             return error
         ids = payload.get("ids", [])
         note = payload.get("note", "Bulk resolved")
+        current_user = get_current_user()
+        actor = getattr(current_user, "user_id", None) or getattr(current_user, "username", None) or "system"
 
         updated = 0
         skipped_ids = []
+        resolved_ids = []
         for discrepancy_id in ids:
             discrepancy = _tenant_scoped_get(session, Discrepancy, discrepancy_id, tenant_id)
             if not discrepancy:
@@ -1752,7 +1755,18 @@ def bulk_resolve_discrepancies():
                 "message": note,
             })
             updated += 1
+            resolved_ids.append(discrepancy.id)
 
+        if resolved_ids:
+            # One audit record for the whole batch (not per row): resolve_discrepancy
+            # already covers the single-item case, and a bulk action is one operator
+            # decision, so it should read back as one event with every id it touched.
+            persist_audit_event(session, ActionAuditRecord(
+                tenant_id=tenant_id or "default",
+                actor=actor,
+                action="bulk_resolve_discrepancies",
+                details={"discrepancy_ids": resolved_ids, "note": note, "skipped_ids": skipped_ids},
+            ))
         session.commit()
         logger.info("Bulk resolved %s discrepancies successfully", updated)
         return jsonify({"status": "resolved", "updated": updated, "skipped_ids": skipped_ids}), 200

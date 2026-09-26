@@ -17,6 +17,14 @@ def build_session():
 
 
 def test_webhook_action_triggers_http_post(monkeypatch):
+    # _trigger_webhook now refuses to send unless it can HMAC-sign the payload.
+    monkeypatch.setenv("WEBHOOK_SECRET_KEY", "test-webhook-secret-key")
+    # _validate_webhook_url does a real DNS lookup as part of its SSRF check, and
+    # example.test (RFC 2606) is guaranteed never to resolve -- by design, not a
+    # bug. This test is about the signed POST the action makes, not the SSRF
+    # guard (which has no dedicated test coverage of its own yet), so stub the
+    # guard out rather than depend on live DNS resolution succeeding in CI.
+    monkeypatch.setattr("escalation_engine._validate_webhook_url", lambda url: None)
     session = build_session()
     incident = Discrepancy(
         id="inc-1",
@@ -49,8 +57,8 @@ def test_webhook_action_triggers_http_post(monkeypatch):
         status_code = 200
         text = "ok"
 
-    def fake_post(url, json=None, headers=None, timeout=None):
-        calls.append({"url": url, "json": json, "headers": headers, "timeout": timeout})
+    def fake_post(url, json=None, headers=None, timeout=None, allow_redirects=None):
+        calls.append({"url": url, "json": json, "headers": headers, "timeout": timeout, "allow_redirects": allow_redirects})
         return DummyResponse()
 
     monkeypatch.setattr("escalation_engine.requests.post", fake_post)
@@ -59,6 +67,9 @@ def test_webhook_action_triggers_http_post(monkeypatch):
 
     assert result["details"][0]["status"] == "webhook_triggered"
     assert calls[0]["url"] == "https://example.test/hook"
+    # Redirects must stay disabled: a redirect could otherwise steer the signed
+    # payload at a host the SSRF check above never got to see.
+    assert calls[0]["allow_redirects"] is False
 
 
 def test_notify_action_sends_email(monkeypatch, tmp_path):
@@ -68,7 +79,7 @@ def test_notify_action_sends_email(monkeypatch, tmp_path):
         trans_id="txn-2",
         tenant_id="tenant-a",
         anomaly_type="suspicious_amount",
-        severity="high",
+        severity="warning",  # "high" is not a valid severity (ck_discrepancy_severity)
         details="Large transfer above threshold",
         status="needs_review",
     )
@@ -89,7 +100,7 @@ def test_notify_action_sends_email(monkeypatch, tmp_path):
         description="Email on-call operator",
         condition_field="severity",
         condition_operator="equals",
-        condition_value="high",
+        condition_value="warning",
         action="notify",
         target="ops@example.com",
         priority=5,

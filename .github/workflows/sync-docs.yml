@@ -76,11 +76,7 @@ jobs:
           cache-dependency-path: pesaguard_backend_pipeline/requirements.txt
 
       - name: Install dependencies
-        # jsonschema is imported by the app but is not in requirements.txt;
-        # ci.yml installs it separately at this same pin.
-        run: |
-          pip install -r pesaguard_backend_pipeline/requirements.txt
-          pip install jsonschema==4.23.0
+        run: pip install -r pesaguard_backend_pipeline/requirements.txt
 
       - name: Generate the implemented spec from the registered routes
         env:

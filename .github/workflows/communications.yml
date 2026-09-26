@@ -62,12 +62,8 @@ jobs:
       - name: Install Python dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install pytest==8.3.4
-          if [ -f pesaguard_backend_pipeline/requirements.txt ]; then
-            pip install -r pesaguard_backend_pipeline/requirements.txt
-          else
-            pip install Flask SQLAlchemy psycopg2-binary redis requests PyJWT alembic
-          fi
+          pip install -r pesaguard_backend_pipeline/requirements-dev.txt
+          pip install alembic
 
       - name: Lint check (compile)
         run: |
